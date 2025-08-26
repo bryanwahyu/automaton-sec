@@ -1,9 +1,8 @@
-package docker
+package runner
 
 import (
 	"context"
 	"fmt"
-	"math/rand"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -11,73 +10,56 @@ import (
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
 )
 
-type Runner struct{
-	randSource *rand.Rand
-}
+type Runner struct{}
 
-func NewRunner() *Runner {
-	// Create a dedicated random source to avoid contention
-	src := rand.NewSource(time.Now().UnixNano())
-	return &Runner{
-		randSource: rand.New(src),
-	}
-}
+func NewRunner() *Runner { return &Runner{} }
 
 func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResult, error) {
 	start := time.Now()
 
+	artifactPath := filepath.Join("./temp", fmt.Sprintf("%s-%d", req.Tool, time.Now().UnixNano()))
 	var cmd *exec.Cmd
-	// Use ./temp directory instead of system temp
-	tempDir := filepath.Join(".", "temp")
-	artifactPath := filepath.Join(tempDir, fmt.Sprintf("%s-%d", req.Tool, r.randSource.Int()))
 	rawFormat := "json"
 
 	switch req.Tool {
 	case domain.ToolTrivy:
 		artifactPath += ".sarif"
 		rawFormat = "sarif"
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
-			"-v", "/var/run/docker.sock:/var/run/docker.sock",
-			"-v", fmt.Sprintf("%s:/out", filepath.Dir(artifactPath)),
-			"aquasec/trivy:latest",
-			"image", "--scanners", "vuln",
+		cmd = exec.CommandContext(ctx,
+			"trivy", "image",
+			"--scanners", "vuln",
 			"--severity", "HIGH,CRITICAL",
 			"--format", "sarif",
-			"-o", "/out/"+filepath.Base(artifactPath),
+			"-o", artifactPath,
 			req.Image,
 		)
 
 	case domain.ToolGitleaks:
 		artifactPath += ".json"
-		rawFormat = "json"
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
-			"-v", fmt.Sprintf("%s:/repo", req.Path),
-			"zricethezav/gitleaks:latest",
-			"detect", "--source=/repo",
-			"--report-format=json", "--report-path=/repo/"+filepath.Base(artifactPath),
+		cmd = exec.CommandContext(ctx,
+			"gitleaks", "detect",
+			"--source", req.Path,
+			"--report-format", "json",
+			"--report-path", artifactPath,
 		)
 
 	case domain.ToolZAP:
 		artifactPath += ".html"
 		rawFormat = "html"
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm", "-t",
-			"-v", fmt.Sprintf("%s:/zap/wrk", filepath.Dir(artifactPath)),
-			"owasp/zap2docker-stable",
+		cmd = exec.CommandContext(ctx,
 			"zap-baseline.py",
 			"-t", req.Target,
-			"-r", filepath.Base(artifactPath),
+			"-r", artifactPath,
 			"-I", "-m", "5", "-d",
 		)
 
 	case domain.ToolNuclei:
 		artifactPath += ".json"
-		rawFormat = "json"
-		cmd = exec.CommandContext(ctx, "docker", "run", "--rm",
-			"-v", fmt.Sprintf("%s:/tmp", filepath.Dir(artifactPath)),
-			"projectdiscovery/nuclei:latest",
+		cmd = exec.CommandContext(ctx,
+			"nuclei",
 			"-u", req.Target,
 			"-severity", "critical,high,medium",
-			"-json", "-o", "/tmp/"+filepath.Base(artifactPath),
+			"-json", "-o", artifactPath,
 			"-rl", "50", "-c", "50", "-irr",
 		)
 
@@ -85,32 +67,18 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		return domain.RunResult{}, fmt.Errorf("unsupported tool: %s", req.Tool)
 	}
 
-	// jalankan docker command
 	out, err := cmd.CombinedOutput()
 	duration := time.Since(start).Milliseconds()
 
-	exitCode := 0
 	if err != nil {
-		// ambil exit code
-		if ee, ok := err.(*exec.ExitError); ok {
-			exitCode = ee.ExitCode()
-		} else {
-			return domain.RunResult{}, fmt.Errorf("run error: %v, output=%s", err, string(out))
-		}
-	}
-
-	// counts parsing minimal (misal dari exit code, detail parse bisa ditambahkan)
-	counts := domain.SeverityCounts{}
-	if exitCode != 0 {
-		counts.High = 1
-		counts.Total = 1
+		return domain.RunResult{}, fmt.Errorf("run error: %v, output=%s", err, string(out))
 	}
 
 	return domain.RunResult{
-		Counts:           counts,
+		Counts:            domain.SeverityCounts{}, // TODO: parse output
 		LocalArtifactPath: artifactPath,
-		RawFormat:        rawFormat,
-		ExitCode:         exitCode,
-		DurationMS:       duration,
+		RawFormat:         rawFormat,
+		ExitCode:          0,
+		DurationMS:        duration,
 	}, nil
 }

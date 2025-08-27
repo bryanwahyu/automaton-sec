@@ -3,6 +3,7 @@ package runner
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"time"
@@ -12,10 +13,17 @@ import (
 
 type Runner struct{}
 
-func NewRunner() *Runner { return &Runner{} }
+func NewRunner() *Runner {
+	return &Runner{}
+}
 
 func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResult, error) {
 	start := time.Now()
+
+	// Pastikan temp dir ada
+	if err := os.MkdirAll("./temp", 0755); err != nil {
+		return domain.RunResult{}, fmt.Errorf("failed to create temp dir: %w", err)
+	}
 
 	artifactPath := filepath.Join("./temp", fmt.Sprintf("%s-%d", req.Tool, time.Now().UnixNano()))
 	var cmd *exec.Cmd
@@ -46,21 +54,26 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 	case domain.ToolZAP:
 		artifactPath += ".html"
 		rawFormat = "html"
+		// Convert to absolute path untuk ZAP
+		absArtifactPath, err := filepath.Abs(artifactPath)
+		if err != nil {
+			return domain.RunResult{}, fmt.Errorf("failed to get absolute path: %w", err)
+		}
 		cmd = exec.CommandContext(ctx,
-			"zap-baseline.py",
-			"-t", req.Target,
-			"-r", artifactPath,
-			"-I", "-m", "5", "-d",
+			"zap.sh", "-cmd", 
+			"-quickurl", req.Target, 
+			"-quickout", absArtifactPath, 
+			"-quickprogress",
 		)
 
 	case domain.ToolNuclei:
-		artifactPath += ".json"
+		artifactPath += ".jsonl"
 		cmd = exec.CommandContext(ctx,
 			"nuclei",
 			"-u", req.Target,
-			"-severity", "critical,high,medium",
-			"-json", "-o", artifactPath,
-			"-rl", "50", "-c", "50", "-irr",
+			"-severity", "critical,high,medium,info,low",
+			"-jsonl", "-o", artifactPath,
+			"-rl", "50", "-c", "50", "-irr", "-silent",
 		)
 
 	default:
@@ -70,15 +83,33 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 	out, err := cmd.CombinedOutput()
 	duration := time.Since(start).Milliseconds()
 
+	exitCode := 0
 	if err != nil {
-		return domain.RunResult{}, fmt.Errorf("run error: %v, output=%s", err, string(out))
+		// Ambil exit code
+		if exitErr, ok := err.(*exec.ExitError); ok {
+			exitCode = exitErr.ExitCode()
+		}
+		// Trivy (1), ZAP (2), atau Nuclei (1) artinya ada finding, bukan gagal
+		if (req.Tool == domain.ToolTrivy && exitCode == 1) ||
+			(req.Tool == domain.ToolZAP && exitCode == 2) ||
+			(req.Tool == domain.ToolNuclei && exitCode == 1) {
+			// treat as success with findings
+		} else {
+			return domain.RunResult{}, fmt.Errorf("run error: tool=%s exit=%d, err=%v, output=%s",
+				req.Tool, exitCode, err, string(out))
+		}
+	}
+
+	// Verifikasi file output ada sebelum return
+	if _, err := os.Stat(artifactPath); os.IsNotExist(err) {
+		return domain.RunResult{}, fmt.Errorf("output file not created: %s, command output: %s", artifactPath, string(out))
 	}
 
 	return domain.RunResult{
-		Counts:            domain.SeverityCounts{}, // TODO: parse output
+		Counts:            domain.SeverityCounts{}, // TODO: parse output file
 		LocalArtifactPath: artifactPath,
 		RawFormat:         rawFormat,
-		ExitCode:          0,
+		ExitCode:          exitCode,
 		DurationMS:        duration,
 	}, nil
 }

@@ -1,49 +1,78 @@
+# ========================
+# Build Stage
+# ========================
 FROM golang:1.24-bullseye AS builder
 
-# build Go app
 WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
 COPY . .
 RUN go build -o security-api ./cmd/api
 
-# final image
-FROM debian:bullseye-slim
-
+# ========================
+# Final Stage (FAT Image)
+# ========================
+FROM openjdk:17-jdk-slim-bullseye
 # Install dependencies
-RUN apt-get update && apt-get install -y \
-    wget curl unzip python3 python3-pip git \
+RUN apt-get update --fix-missing \
+    && apt-get install -y wget curl unzip git python3 python3-pip \
+    && pip3 install --no-cache-dir pyyaml requests \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Trivy
-RUN wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | apt-key add - \
-    && echo deb https://aquasecurity.github.io/trivy-repo/deb stable main > /etc/apt/sources.list.d/trivy.list \
-    && apt-get update && apt-get install -y trivy
+WORKDIR /opt
+#==== Instal Trivy CLI ====
 
-# Install Gitleaks
-RUN wget https://github.com/zricethezav/gitleaks/releases/download/v8.18.4/gitleaks_8.18.4_linux_x64.tar.gz \
-    && tar -xvf gitleaks_8.18.4_linux_x64.tar.gz -C /usr/local/bin gitleaks \
-    && rm gitleaks_8.18.4_linux_x64.tar.gz
-
-# Install Nuclei
+# === Install Nuclei ===
 RUN wget https://github.com/projectdiscovery/nuclei/releases/download/v3.3.5/nuclei_3.3.5_linux_amd64.zip \
     && unzip nuclei_3.3.5_linux_amd64.zip -d /usr/local/bin \
-    && rm nuclei_3.3.5_linux_amd64.zip
+    && rm nuclei_3.3.5_linux_amd64.zip \
+    && chmod +x /usr/local/bin/nuclei \
+    && nuclei -update-templates
 
-# Install ZAP (baseline scan)
-RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0_Linux.tar.gz \
-    && tar -xvf ZAP_2.14.0_Linux.tar.gz -C /opt \
-    && ln -s /opt/ZAP_2.14.0/zap.sh /usr/local/bin/zap.sh \
-    && ln -s /opt/ZAP_2.14.0/zap-baseline.py /usr/local/bin/zap-baseline.py \
-    && rm ZAP_2.14.0_Linux.tar.gz
+# === Install ZAP (Simple Approach) ===
+# Download ZAP JAR
+RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1_Linux.tar.gz \
+    && tar -xzf ZAP_2.16.1_Linux.tar.gz -C /opt \
+    && rm ZAP_2.16.1_Linux.tar.gz
 
-# Add nuclei templates
-RUN nuclei -update-templates
+# Create simple ZAP wrapper scripts
+RUN echo '#!/bin/bash' > /usr/local/bin/zap.sh \
+    && echo 'cd /opt/ZAP_2.16.1' >> /usr/local/bin/zap.sh \
+    && echo 'java -jar zap-2.16.1.jar "$@"' >> /usr/local/bin/zap.sh \
+    && chmod +x /usr/local/bin/zap.sh
 
-# Add non-root user
-RUN useradd -m appuser
-USER appuser
+# Download and setup ZAP baseline script
+RUN wget -O /usr/local/bin/zap-baseline.py \
+    https://raw.githubusercontent.com/zaproxy/zaproxy/main/docker/zap-baseline.py \
+    && chmod +x /usr/local/bin/zap-baseline.py \
+    && sed -i '1i#!/usr/bin/env python3' /usr/local/bin/zap-baseline.py
 
+# Test ZAP installation
+RUN echo "=== ZAP INSTALLATION TEST ===" \
+    && ls -la /opt/ZAP_2.16.1/ \
+    && echo "ZAP JAR exists:" \
+    && ls -la /opt/ZAP_2.16.1/zap-2.16.1.jar \
+    && echo "ZAP script exists:" \
+    && ls -la /usr/local/bin/zap.sh \
+    && echo "ZAP baseline script exists:" \
+    && ls -la /usr/local/bin/zap-baseline.py \
+    && echo "Testing Java:" \
+    && java -version \
+    && echo "Testing ZAP help (quick test):" \
+    && timeout 5 zap.sh -help || echo "ZAP help test completed" \
+    && echo "=== ZAP TEST COMPLETED ==="
+
+# Create user and set ownership
+RUN useradd -m appuser \
+    && mkdir -p /home/appuser/.ZAP \
+    && chown -R appuser:appuser /opt/ZAP_2.16.1 /home/appuser/.ZAP
+
+# Copy and setup application
 WORKDIR /app
 COPY --from=builder /app/security-api /app/security-api
+RUN chmod +x /app/security-api && chown appuser:appuser /app/security-api
+
+USER appuser
 
 ENTRYPOINT ["./security-api"]
 EXPOSE 8000

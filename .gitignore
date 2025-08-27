@@ -5,3 +5,5 @@ go.sum
 *.log
 *.sqlite
 *.db    
+
+/vendor

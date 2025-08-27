@@ -57,6 +57,32 @@ type TriggerScanResult struct {
 	DurationMS  int64                 `json:"duration_ms"`
 }
 
+// TriggerScanUntilDone → jalanin scan dengan context.Background()
+// cocok dipanggil dari goroutine di router supaya gak kena context canceled
+func (s *Service) TriggerScanUntilDone(cmd TriggerScanCommand) (TriggerScanResult, error) {
+	return s.TriggerScan(context.Background(), cmd)
+}
+
+// UpdateStatus → untuk update status scan di repo (misalnya "queued", "running", "failed")
+func (s *Service) UpdateStatus(tenant string, status string) error {
+	// Implementasi sederhana: update ke repo
+	// Bisa diperluas untuk logging / audit
+	return s.Repo.UpdateStatus(context.Background(), tenant, domain.Status(status))
+}
+
+// MarkDone → update status scan jadi done/success + simpan hasil
+func (s *Service) MarkDone(tenant string, res TriggerScanResult) error {
+	// kamu bisa langsung update status di repo
+	return s.Repo.UpdateResult(
+		context.Background(),
+		tenant,
+		domain.ScanID(res.ID),
+		domain.StatusSuccess,
+		res.ArtifactURL,
+		res.Counts,
+	)
+}
+
 // TriggerScan jalankan scanner → upload artifact → simpan ke repo
 func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (TriggerScanResult, error) {
 	now := s.Clock.Now()

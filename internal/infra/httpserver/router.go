@@ -4,7 +4,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"strconv"
-
+	"time"
+	"fmt"
 	"github.com/go-chi/chi/v5"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -42,7 +43,6 @@ func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
 		}
 	}
 }
-
 // POST /v1/{tenant}/webhook/security-scan
 func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
@@ -75,13 +75,38 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 		Metadata:  body.Metadata,
 	}
 
-	result, err := r.svc.TriggerScan(req.Context(), cmd)
-	if err != nil {
-		return err
+	// 🚀 Jalankan di background, biar jalan sampai selesai
+	go func() {
+		// update status ke running
+		_ = r.svc.UpdateStatus(cmd.TenantID, "running")
+
+		result, err := r.svc.TriggerScanUntilDone(cmd)
+		if err != nil {
+			fmt.Printf("background scan error for tenant=%s tool=%s: %v\n",
+				tenant, body.Tool, err)
+			_ = r.svc.UpdateStatus(cmd.TenantID, "failed")
+			return
+		}
+
+		// kalau berhasil → mark done
+		_ = r.svc.MarkDone(cmd.TenantID, result)
+		fmt.Printf("scan finished: tenant=%s tool=%s artifact=%s\n",
+			tenant, body.Tool, result.ArtifactURL)
+	}()
+
+	// 🔙 langsung balikin respons ke client
+	resp := map[string]any{
+		"status":   "queued",
+		"tenant":   tenant,
+		"tool":     body.Tool,
+		"branch":   body.Branch,
+		"commit":   body.CommitSHA,
+		"message":  "scan started in background",
+		"queuedAt": time.Now(),
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(result)
+	return json.NewEncoder(w).Encode(resp)
 }
 
 // GET /v1/{tenant}/scans/latest?limit=20

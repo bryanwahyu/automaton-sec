@@ -8,8 +8,10 @@ type Repository interface {
 	Get(ctx context.Context, tenant string, id ScanID) (*Scan, error)
 	Latest(ctx context.Context, tenant string, limit int) ([]*Scan, error)
 	Summary(ctx context.Context, tenant string, sinceDays int) (int, int, int, int, error)
-
-	// tambahan paginate
+	// tambahan untuk background mode
+	UpdateStatus(ctx context.Context, tenant string, status Status) error
+	UpdateResult(ctx context.Context, tenant string, id ScanID, status Status, artifactURL string, counts SeverityCounts) error
+	// tambahan pagination
 	Paginate(ctx context.Context, tenant string, page, pageSize int) ([]*Scan, error)
 	Cursor(ctx context.Context, tenant string, cursorTime time.Time, cursorID string, pageSize int) ([]*Scan, error)
 }

@@ -16,6 +16,7 @@ func NewScanRepository(db *sql.DB) *ScanRepository {
 	return &ScanRepository{db: db}
 }
 
+
 // Save insert/update Scan record
 func (r *ScanRepository) Save(ctx context.Context, s *domain.Scan) error {
 	const q = `
@@ -163,6 +164,38 @@ LIMIT ? OFFSET ?;
 		out = append(out, &s)
 	}
 	return out, rows.Err()
+}
+// UpdateStatus hanya update kolom status
+func (r *ScanRepository) UpdateStatus(ctx context.Context, tenant string, status domain.Status) error {
+	const q = `
+UPDATE security_scans
+SET status = ?
+WHERE tenant_id = ?
+ORDER BY triggered_at DESC
+LIMIT 1;`
+	_, err := r.db.ExecContext(ctx, q, status, tenant)
+	return err
+}
+
+// UpdateResult update hasil scan terakhir (status, artifact_url, counts)
+func (r *ScanRepository) UpdateResult(ctx context.Context, tenant string, id domain.ScanID, status domain.Status, artifactURL string, counts domain.SeverityCounts) error {
+	const q = `
+UPDATE security_scans
+SET status = ?,
+    critical = ?,
+    high = ?,
+    medium = ?,
+    low = ?,
+    findings_total = ?,
+    artifact_url = ?
+WHERE tenant_id = ? AND id = ?;`
+	_, err := r.db.ExecContext(ctx, q,
+		status,
+		counts.Critical, counts.High, counts.Medium, counts.Low, counts.Total,
+		artifactURL,
+		tenant, id,
+	)
+	return err
 }
 
 // Cursor-based pagination (after cursorTime, cursorID)

@@ -11,6 +11,7 @@ type ScanID string
 type Tool string
 
 const (
+	ToolSQLMap   Tool= "sqlmap"
 	ToolTrivy    Tool = "trivy"
 	ToolGitleaks Tool = "gitleaks"
 	ToolZAP      Tool = "zap"

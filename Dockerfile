@@ -20,7 +20,19 @@ RUN apt-get update --fix-missing \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
+#==== insstall Gitleaks ====
+RUN wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz \
+    && tar zxvf gitleaks_8.18.1_linux_x64.tar.gz \
+    && mv gitleaks /usr/local/bin/ \
+    && rm gitleaks_8.18.1_linux_x64.tar.gz \
+    && gitleaks --version
+    
 #==== Instal Trivy CLI ====
+RUN wget https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.tar.gz \
+    && tar zxvf trivy_0.65.0_Linux-64bit.tar.gz \
+    && mv trivy /usr/local/bin/ \
+    && rm trivy_0.65.0_Linux-64bit.tar.gz \
+    && trivy --version
 
 # === Install Nuclei ===
 RUN wget https://github.com/projectdiscovery/nuclei/releases/download/v3.3.5/nuclei_3.3.5_linux_amd64.zip \

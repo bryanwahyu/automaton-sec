@@ -30,6 +30,12 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 	rawFormat := "json"
 
 	switch req.Tool {
+	case domain.ToolSQLMap:
+		artifactPath += ".json"
+		cmd = exec.CommandContext(ctx,
+			"sqlmap", "-u", req.Target,
+			"--batch", "--json", "-o", artifactPath,
+		)
 	case domain.ToolTrivy:
 		artifactPath += ".sarif"
 		rawFormat = "sarif"
@@ -65,7 +71,6 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			"-quickout", absArtifactPath, 
 			"-quickprogress",
 		)
-
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"
 		cmd = exec.CommandContext(ctx,

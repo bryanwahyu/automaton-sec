@@ -13,8 +13,10 @@ import (
 	"github.com/go-chi/chi/v5"
 
 	"github.com/bryanwahyu/automaton-sec/internal/application"
+	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
 	"github.com/bryanwahyu/automaton-sec/internal/config"
+	openai "github.com/bryanwahyu/automaton-sec/internal/infra/ai/openai"
 	mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
 	dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
 	"github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
@@ -62,8 +64,12 @@ func main() {
 	// init runner
 	runner := dockerrunner.NewRunner()
 
-	// init service
-	svc := &appscans.Service{
+	// init open ai client
+	aiClient := openai.NewClient(cfg.OpenAI.APIKey)
+
+	// init services
+	aiSvc := appai.NewService(aiClient)
+	scansSvc := &appscans.Service{
 		Repo:      repo,
 		Runner:    runner,
 		Artifacts: store,
@@ -72,7 +78,7 @@ func main() {
 
 	// init router
 	mux := chi.NewRouter()
-	mux.Mount("/", httpserver.NewRouter(svc, nil))
+	mux.Mount("/", httpserver.NewRouter(scansSvc, aiSvc, nil))
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{

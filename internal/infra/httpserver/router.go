@@ -2,22 +2,26 @@ package httpserver
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strconv"
 	"time"
-	"fmt"
+
 	"github.com/go-chi/chi/v5"
+
+	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
 )
 
 type Router struct {
-	svc     *appscans.Service
-	hmacKey []byte
+	scansSvc *appscans.Service
+	aiSvc    *appai.Service
+	hmacKey  []byte
 }
 
-func NewRouter(svc *appscans.Service, hmacKey []byte) http.Handler {
-	r := &Router{svc: svc, hmacKey: hmacKey}
+func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, hmacKey []byte) http.Handler {
+	r := &Router{scansSvc: scansSvc, aiSvc: aiSvc, hmacKey: hmacKey}
 	mux := chi.NewRouter()
 
 	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
@@ -29,6 +33,7 @@ func NewRouter(svc *appscans.Service, hmacKey []byte) http.Handler {
 		rt.Get("/scans/latest", r.wrap(r.handleLatest))
 		rt.Get("/scans/{id}", r.wrap(r.handleGet))
 		rt.Get("/summary", r.wrap(r.handleSummary))
+		rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
 	})
 
 	return mux
@@ -43,6 +48,26 @@ func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
 		}
 	}
 }
+
+// POST /v1/{tenant}/ai/analyze
+func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error {
+	var body struct {
+		FileURL string `json:"file_url"`
+	}
+	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return err
+	}
+
+	result, err := r.aiSvc.Analyze(req.Context(), body.FileURL)
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.Write([]byte(result))
+	return nil
+}
+
 // POST /v1/{tenant}/webhook/security-scan
 func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
@@ -78,18 +103,18 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 	// 🚀 Jalankan di background, biar jalan sampai selesai
 	go func() {
 		// update status ke running
-		_ = r.svc.UpdateStatus(cmd.TenantID, "running")
+		_ = r.scansSvc.UpdateStatus(cmd.TenantID, "running")
 
-		result, err := r.svc.TriggerScanUntilDone(cmd)
+		result, err := r.scansSvc.TriggerScanUntilDone(cmd)
 		if err != nil {
 			fmt.Printf("background scan error for tenant=%s tool=%s: %v\n",
 				tenant, body.Tool, err)
-			_ = r.svc.UpdateStatus(cmd.TenantID, "failed")
+			_ = r.scansSvc.UpdateStatus(cmd.TenantID, "failed")
 			return
 		}
 
 		// kalau berhasil → mark done
-		_ = r.svc.MarkDone(cmd.TenantID, result)
+		_ = r.scansSvc.MarkDone(cmd.TenantID, result)
 		fmt.Printf("scan finished: tenant=%s tool=%s artifact=%s\n",
 			tenant, body.Tool, result.ArtifactURL)
 	}()
@@ -114,7 +139,7 @@ func (r *Router) handleLatest(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
 
-	list, err := r.svc.Latest(req.Context(), tenant, limit)
+	list, err := r.scansSvc.Latest(req.Context(), tenant, limit)
 	if err != nil {
 		return err
 	}
@@ -128,7 +153,7 @@ func (r *Router) handleGet(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 	id := chi.URLParam(req, "id")
 
-	scan, err := r.svc.Get(req.Context(), tenant, domain.ScanID(id))
+	scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(id))
 	if err != nil {
 		return err
 	}
@@ -142,7 +167,7 @@ func (r *Router) handleSummary(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 	days, _ := strconv.Atoi(req.URL.Query().Get("days"))
 
-	summary, err := r.svc.Summary(req.Context(), tenant, days)
+	summary, err := r.scansSvc.Summary(req.Context(), tenant, days)
 	if err != nil {
 		return err
 	}

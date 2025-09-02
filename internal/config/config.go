@@ -28,6 +28,10 @@ type Config struct {
 		Region     string `yaml:"region"`
 		UseSSL     bool   `yaml:"useSSL"`
 	} `yaml:"minio"`
+
+	OpenAI struct {
+		APIKey string `yaml:"apiKey"`
+	} `yaml:"openai"`
 }
 
 // Load baca file config.yaml

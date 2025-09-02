@@ -45,8 +45,9 @@ func main() {
 	}
 	defer db.Close()
 
-	// init repo
-	repo := mysqlp.NewScanRepository(db)
+    // init repos
+    repo := mysqlp.NewScanRepository(db)
+    analystRepo := mysqlp.NewAnalystRepository(db)
 
 	// init minio
 	store, err := minioStore.New(ctx,
@@ -68,7 +69,7 @@ func main() {
 	aiClient := openai.NewClient(cfg.OpenAI.APIKey)
 
 	// init services
-	aiSvc := appai.NewService(aiClient)
+    aiSvc := appai.NewService(aiClient).WithRepos(analystRepo, repo)
 	scansSvc := &appscans.Service{
 		Repo:      repo,
 		Runner:    runner,

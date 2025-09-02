@@ -20,3 +20,17 @@ CREATE TABLE IF NOT EXISTS security_scans (
   PRIMARY KEY (id),
   KEY idx_tenant_dt (tenant_id, triggered_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Stores AI analysis results
+CREATE TABLE IF NOT EXISTS security_analyze (
+  id          varchar(64)  NOT NULL,
+  tenant_id   varchar(64)  NOT NULL,
+  scan_id     varchar(64)  DEFAULT NULL,
+  file_url    text         NOT NULL,
+  result_json json         NOT NULL,
+  created_at  datetime(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (id),
+  KEY idx_analyze_tenant_created (tenant_id, created_at),
+  KEY idx_analyze_scan (scan_id),
+  CONSTRAINT fk_analyze_scan FOREIGN KEY (scan_id) REFERENCES security_scans(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

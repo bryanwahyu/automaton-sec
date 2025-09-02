@@ -28,13 +28,14 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, hmacKey []byte)
 		w.Write([]byte("ok"))
 	})
 
-	mux.Route("/v1/{tenant}", func(rt chi.Router) {
+    mux.Route("/v1/{tenant}", func(rt chi.Router) {
 		rt.Post("/webhook/security-scan", r.wrap(r.handleTriggerScan))
 		rt.Get("/scans/latest", r.wrap(r.handleLatest))
 		rt.Get("/scans/{id}", r.wrap(r.handleGet))
 		rt.Get("/summary", r.wrap(r.handleSummary))
-		rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
-	})
+        rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
+        rt.Get("/ai/analyze", r.wrap(r.handleAIAnalyzeList))
+    })
 
 	return mux
 }
@@ -51,21 +52,38 @@ func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
 
 // POST /v1/{tenant}/ai/analyze
 func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error {
-	var body struct {
-		FileURL string `json:"file_url"`
-	}
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		return err
-	}
+    tenant := chi.URLParam(req, "tenant")
+    var body struct {
+        FileURL string `json:"file_url"`
+        ScanID  string `json:"scan_id"`
+        Counts  *domain.SeverityCounts `json:"counts"`
+    }
+    if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+        return err
+    }
 
-	result, err := r.aiSvc.Analyze(req.Context(), body.FileURL)
-	if err != nil {
-		return err
-	}
+    // Perform analyze + store; optionally update counts for provided scan_id
+    a, err := r.aiSvc.AnalyzeAndStore(req.Context(), tenant, body.ScanID, body.Counts, body.FileURL)
+    if err != nil {
+        return err
+    }
 
-	w.Header().Set("Content-Type", "application/json")
-	w.Write([]byte(result))
-	return nil
+    w.Header().Set("Content-Type", "application/json")
+    return json.NewEncoder(w).Encode(a)
+}
+
+// GET /v1/{tenant}/ai/analyze?page=&page_size=
+func (r *Router) handleAIAnalyzeList(w http.ResponseWriter, req *http.Request) error {
+    tenant := chi.URLParam(req, "tenant")
+    page, _ := strconv.Atoi(req.URL.Query().Get("page"))
+    size, _ := strconv.Atoi(req.URL.Query().Get("page_size"))
+
+    list, err := r.aiSvc.ListAnalyses(req.Context(), tenant, page, size)
+    if err != nil {
+        return err
+    }
+    w.Header().Set("Content-Type", "application/json")
+    return json.NewEncoder(w).Encode(list)
 }
 
 // POST /v1/{tenant}/webhook/security-scan

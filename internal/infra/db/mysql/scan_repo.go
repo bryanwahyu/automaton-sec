@@ -9,7 +9,7 @@ import (
 )
 
 type ScanRepository struct {
-	db *sql.DB
+    db *sql.DB
 }
 
 func NewScanRepository(db *sql.DB) *ScanRepository {
@@ -236,4 +236,21 @@ LIMIT ?;
 		out = append(out, &s)
 	}
 	return out, rows.Err()
+}
+
+// UpdateCounts updates only the counts columns for a specific scan id
+func (r *ScanRepository) UpdateCounts(ctx context.Context, tenant string, id domain.ScanID, counts domain.SeverityCounts) error {
+    const q = `
+UPDATE security_scans
+SET critical = ?,
+    high = ?,
+    medium = ?,
+    low = ?,
+    findings_total = ?
+WHERE tenant_id = ? AND id = ?;`
+    _, err := r.db.ExecContext(ctx, q,
+        counts.Critical, counts.High, counts.Medium, counts.Low, counts.Total,
+        tenant, id,
+    )
+    return err
 }

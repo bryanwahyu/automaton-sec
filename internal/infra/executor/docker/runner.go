@@ -110,11 +110,13 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		return domain.RunResult{}, fmt.Errorf("output file not created: %s, command output: %s", artifactPath, string(out))
 	}
 
-	return domain.RunResult{
-		Counts:            domain.SeverityCounts{}, // TODO: parse output file
-		LocalArtifactPath: artifactPath,
-		RawFormat:         rawFormat,
-		ExitCode:          exitCode,
-		DurationMS:        duration,
-	}, nil
+    counts, _ := domain.ParseSeverityCounts(req.Tool, artifactPath)
+
+    return domain.RunResult{
+        Counts:            counts,
+        LocalArtifactPath: artifactPath,
+        RawFormat:         rawFormat,
+        ExitCode:          exitCode,
+        DurationMS:        duration,
+    }, nil
 }

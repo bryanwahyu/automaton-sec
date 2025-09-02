@@ -20,7 +20,7 @@ func NewClient(apiKey string) *Client {
 
 func (c *Client) Analyze(ctx context.Context, fileURL string) (string, error) {
 	resp, err := c.CreateChatCompletion(ctx, openai.ChatCompletionRequest{
-		Model:     openai.GPT3Dot5Turbo,
+		Model:     "gpt-4-1106-preview",
 		MaxTokens: maxTokens,
 		ResponseFormat: &openai.ChatCompletionResponseFormat{
 			Type: openai.ChatCompletionResponseFormatTypeJSONObject,

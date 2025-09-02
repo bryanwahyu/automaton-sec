@@ -23,6 +23,7 @@ func AnalyzeFromMinioURL(url string) (string, error) {
 		Findings: []string{"No malware detected", "File is safe to use"},
 		Advice:   "No action needed. Continue monitoring for future threats.",
 	}
+	
 	result, err := json.MarshalIndent(suggestion, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("failed to marshal suggestion: %w", err)

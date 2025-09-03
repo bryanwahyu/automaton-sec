@@ -51,19 +51,31 @@ func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
 }
 
 // POST /v1/{tenant}/ai/analyze
+// Body: {"scan_id": "<id>"}
+// The server will fetch the corresponding scan's artifact_url and run AI analysis on it.
 func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error {
     tenant := chi.URLParam(req, "tenant")
     var body struct {
-        FileURL string `json:"file_url"`
-        ScanID  string `json:"scan_id"`
-        Counts  *domain.SeverityCounts `json:"counts"`
+        ScanID string `json:"scan_id"`
     }
     if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
         return err
     }
+    if body.ScanID == "" {
+        return fmt.Errorf("scan_id is required")
+    }
 
-    // Perform analyze + store; optionally update counts for provided scan_id
-    a, err := r.aiSvc.AnalyzeAndStore(req.Context(), tenant, body.ScanID, body.Counts, body.FileURL)
+    // Lookup scan to get artifact URL
+    scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(body.ScanID))
+    if err != nil {
+        return err
+    }
+    if scan == nil || scan.ArtifactURL == "" {
+        return fmt.Errorf("artifact_url not found for scan_id: %s", body.ScanID)
+    }
+
+    // Perform analyze + store using the artifact URL; counts inferred from AI output
+    a, err := r.aiSvc.AnalyzeAndStore(req.Context(), tenant, body.ScanID, nil, scan.ArtifactURL)
     if err != nil {
         return err
     }

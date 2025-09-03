@@ -66,7 +66,7 @@ func main() {
 	runner := dockerrunner.NewRunner()
 
 	// init open ai client
-	aiClient := openai.NewClient(cfg.OpenAI.APIKey)
+    aiClient := openai.NewClient(cfg.OpenAI.APIKey, cfg.OpenAI.Model)
 
 	// init services
     aiSvc := appai.NewService(aiClient).WithRepos(analystRepo, repo)

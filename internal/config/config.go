@@ -31,6 +31,7 @@ type Config struct {
 
 	OpenAI struct {
 		APIKey string `yaml:"apiKey"`
+		Model  string `yaml:"model"`
 	} `yaml:"openai"`
 }
 

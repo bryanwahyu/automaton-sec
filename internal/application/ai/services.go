@@ -2,6 +2,7 @@ package ai
 
 import (
     "context"
+    "encoding/json"
     "time"
 
     domai "github.com/bryanwahyu/automaton-sec/internal/domain/ai"
@@ -53,12 +54,50 @@ func (s *Service) AnalyzeAndStore(ctx context.Context, tenant, scanID string, co
         }
     }
 
-    // If a scanID and counts are provided, update only counts on that scan (no new row)
+    // If counts not provided, try to extract from AI result JSON per schema
+    if counts == nil {
+        if cc := extractCountsFromAIResult(result); cc != nil {
+            counts = cc
+        }
+    }
+    // If a scanID available and counts present, update only counts on that scan (no new row)
     if s.scansRepo != nil && scanID != "" && counts != nil {
         _ = s.scansRepo.UpdateCounts(ctx, tenant, scans.ScanID(scanID), *counts)
     }
 
     return a, nil
+}
+
+// extractCountsFromAIResult attempts to parse a counts object from the AI JSON.
+func extractCountsFromAIResult(result string) *scans.SeverityCounts {
+    var payload struct {
+        Counts struct {
+            Critical int `json:"critical"`
+            High     int `json:"high"`
+            Medium   int `json:"medium"`
+            Low      int `json:"low"`
+            Total    int `json:"total"`
+        } `json:"counts"`
+    }
+    if err := json.Unmarshal([]byte(result), &payload); err != nil {
+        return nil
+    }
+    // If all zeros and total zero, treat as empty
+    if payload.Counts.Critical == 0 && payload.Counts.High == 0 && payload.Counts.Medium == 0 && payload.Counts.Low == 0 && payload.Counts.Total == 0 {
+        return nil
+    }
+    // Ensure total consistency
+    sum := payload.Counts.Critical + payload.Counts.High + payload.Counts.Medium + payload.Counts.Low
+    if payload.Counts.Total == 0 {
+        payload.Counts.Total = sum
+    }
+    return &scans.SeverityCounts{
+        Critical: payload.Counts.Critical,
+        High:     payload.Counts.High,
+        Medium:   payload.Counts.Medium,
+        Low:      payload.Counts.Low,
+        Total:    payload.Counts.Total,
+    }
 }
 
 // ListAnalyses returns paginated analysis list for a tenant

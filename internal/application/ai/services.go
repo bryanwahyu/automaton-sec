@@ -68,6 +68,66 @@ func (s *Service) AnalyzeAndStore(ctx context.Context, tenant, scanID string, co
     return a, nil
 }
 
+// QueueAnalysis creates a placeholder analysis record immediately with status=queued
+// and returns the created analysis containing its ID and queued timestamp.
+// This allows the HTTP layer to return quickly while work continues in background.
+func (s *Service) QueueAnalysis(ctx context.Context, tenant, scanID, fileURL string) (*analyst.Analysis, error) {
+    if s.analystRepo == nil {
+        // no repo configured; nothing to persist
+        return &analyst.Analysis{
+            ID:        analyst.AnalysisID(uuid.New().String()),
+            TenantID:  tenant,
+            ScanID:    scanID,
+            FileURL:   fileURL,
+            Result:    `{"status":"queued"}`,
+            CreatedAt: time.Now(),
+        }, nil
+    }
+
+    a := &analyst.Analysis{
+        ID:        analyst.AnalysisID(uuid.New().String()),
+        TenantID:  tenant,
+        ScanID:    scanID,
+        FileURL:   fileURL,
+        Result:    `{"status":"queued"}`,
+        CreatedAt: time.Now(),
+    }
+    if err := s.analystRepo.Save(ctx, a); err != nil {
+        return nil, err
+    }
+    return a, nil
+}
+
+// AnalyzeAndStoreWithID performs analysis and upserts into security_analyze using a fixed ID.
+// If a queued record was created earlier with the same ID, the created_at remains intact
+// because the repo does not update that column on duplicate.
+func (s *Service) AnalyzeAndStoreWithID(ctx context.Context, tenant, scanID string, id analyst.AnalysisID, fileURL string) (*analyst.Analysis, error) {
+    result, err := s.client.Analyze(ctx, fileURL)
+    if err != nil {
+        return nil, err
+    }
+
+    a := &analyst.Analysis{
+        ID:        id,
+        TenantID:  tenant,
+        ScanID:    scanID,
+        FileURL:   fileURL,
+        Result:    result,
+        CreatedAt: time.Now(), // will be ignored on duplicate update
+    }
+    if s.analystRepo != nil {
+        if err := s.analystRepo.Save(ctx, a); err != nil {
+            return nil, err
+        }
+    }
+
+    // extract counts from AI result and update the related scan if possible
+    if cc := extractCountsFromAIResult(result); cc != nil && s.scansRepo != nil && scanID != "" {
+        _ = s.scansRepo.UpdateCounts(ctx, tenant, scans.ScanID(scanID), *cc)
+    }
+    return a, nil
+}
+
 // extractCountsFromAIResult attempts to parse a counts object from the AI JSON.
 func extractCountsFromAIResult(result string) *scans.SeverityCounts {
     var payload struct {

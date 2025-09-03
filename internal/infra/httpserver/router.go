@@ -1,6 +1,7 @@
 package httpserver
 
 import (
+    "context"
     "database/sql"
     "errors"
     "encoding/json"
@@ -85,14 +86,30 @@ func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error
         return fmt.Errorf("artifact_url not found for scan_id: %s", body.ScanID)
     }
 
-    // Perform analyze + store using the artifact URL; counts inferred from AI output
-    a, err := r.aiSvc.AnalyzeAndStore(req.Context(), tenant, body.ScanID, nil, scan.ArtifactURL)
+    // Enqueue immediate placeholder record and run analysis in background
+    queued, err := r.aiSvc.QueueAnalysis(req.Context(), tenant, body.ScanID, scan.ArtifactURL)
     if err != nil {
         return err
     }
 
+    go func() {
+        if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, body.ScanID, queued.ID, scan.ArtifactURL); err != nil {
+            fmt.Printf("background ai analyze error tenant=%s scan_id=%s: %v\n", tenant, body.ScanID, err)
+        }
+    }()
+
+    // Reply immediately
+    resp := map[string]any{
+        "status":       "queued",
+        "tenant":       tenant,
+        "scan_id":      body.ScanID,
+        "analysis_id":  queued.ID,
+        "message":      "AI analysis started in background, tunggu sebentar ya",
+        "queuedAt":     queued.CreatedAt,
+    }
     w.Header().Set("Content-Type", "application/json")
-    return json.NewEncoder(w).Encode(a)
+    w.WriteHeader(http.StatusAccepted)
+    return json.NewEncoder(w).Encode(resp)
 }
 
 // GET /v1/{tenant}/ai/analyze?page=&page_size=

@@ -25,7 +25,7 @@ func NewClient(apiKey, model string) *Client {
 func (c *Client) Analyze(ctx context.Context, fileURL string) (string, error) {
     model := c.Model
     if model == "" {
-        model = "o3-2025-04-16"
+        model = "gpt-5"
     }
     req := openai.ChatCompletionRequest{
         Model: model,

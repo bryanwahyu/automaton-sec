@@ -93,7 +93,9 @@ RUN useradd -m appuser \
 # Copy and setup application
 WORKDIR /app
 COPY --from=builder /app/security-api /app/security-api
-RUN chmod +x /app/security-api && chown appuser:appuser /app/security-api
+
+# Set proper permissions
+RUN chmod +x /app/security-api && chown -R appuser:appuser /app
 
 USER appuser
 

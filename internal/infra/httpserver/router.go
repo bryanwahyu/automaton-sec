@@ -3,17 +3,18 @@ package httpserver
 import (
     "database/sql"
     "errors"
-	"encoding/json"
-	"fmt"
-	"net/http"
-	"strconv"
-	"time"
+    "encoding/json"
+    "fmt"
+    "net/http"
+    "strconv"
+    "time"
 
-	"github.com/go-chi/chi/v5"
+    "github.com/go-chi/chi/v5"
 
-	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
-	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
-	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+    appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
+    appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
+    domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+    domai "github.com/bryanwahyu/automaton-sec/internal/domain/ai"
 )
 
 type Router struct {
@@ -49,6 +50,10 @@ func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
         if err := h(w, req); err != nil {
             if errors.Is(err, sql.ErrNoRows) {
                 http.Error(w, "not found", http.StatusNotFound)
+                return
+            }
+            if errors.Is(err, domai.ErrQuotaExceeded) {
+                http.Error(w, "ai quota exceeded", http.StatusTooManyRequests)
                 return
             }
             http.Error(w, err.Error(), http.StatusInternalServerError)

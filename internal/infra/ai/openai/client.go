@@ -4,8 +4,10 @@ import (
     "context"
     "fmt"
     "strings"
+    "net/http"
 
     "github.com/bryanwahyu/automaton-sec/internal/infra/ai/prompt"
+    domai "github.com/bryanwahyu/automaton-sec/internal/domain/ai"
     "github.com/sashabaranov/go-openai"
 )
 
@@ -44,6 +46,12 @@ func (c *Client) Analyze(ctx context.Context, fileURL string) (string, error) {
 
     resp, err := c.CreateChatCompletion(ctx, req)
     if err != nil {
+        // Map quota/429 errors to a sentinel error so HTTP layer can return 429
+        if apierr, ok := err.(*openai.APIError); ok {
+            if apierr.HTTPStatusCode == http.StatusTooManyRequests || strings.Contains(strings.ToLower(apierr.Message), "quota") {
+                return "", domai.ErrQuotaExceeded
+            }
+        }
         return "", fmt.Errorf("failed to create chat completion: %w", err)
     }
 

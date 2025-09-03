@@ -16,6 +16,7 @@ import (
     appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
     domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
     domai "github.com/bryanwahyu/automaton-sec/internal/domain/ai"
+    anldom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
 )
 
 type Router struct {
@@ -39,6 +40,7 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, hmacKey []byte)
 		rt.Get("/summary", r.wrap(r.handleSummary))
         rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
         rt.Get("/ai/analyze", r.wrap(r.handleAIAnalyzeList))
+        rt.Post("/ai/analyze/retry", r.wrap(r.handleAIAnalyzeRetry))
     })
 
 	return mux
@@ -106,6 +108,69 @@ func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error
         "analysis_id":  queued.ID,
         "message":      "AI analysis started in background, tunggu sebentar ya",
         "queuedAt":     queued.CreatedAt,
+    }
+    w.Header().Set("Content-Type", "application/json")
+    w.WriteHeader(http.StatusAccepted)
+    return json.NewEncoder(w).Encode(resp)
+}
+
+// POST /v1/{tenant}/ai/analyze/retry
+// Body: {"scan_id": "<id>", "analysis_id":"<optional-existing-id>"}
+// Forces an immediate retry by queueing (or marking retry) and starting background analysis.
+func (r *Router) handleAIAnalyzeRetry(w http.ResponseWriter, req *http.Request) error {
+    tenant := chi.URLParam(req, "tenant")
+    var body struct {
+        ScanID     string `json:"scan_id"`
+        AnalysisID string `json:"analysis_id"`
+    }
+    if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+        return err
+    }
+    if body.ScanID == "" {
+        return fmt.Errorf("scan_id is required")
+    }
+
+    // Lookup scan to get artifact URL
+    scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(body.ScanID))
+    if err != nil {
+        return err
+    }
+    if scan == nil || scan.ArtifactURL == "" {
+        return fmt.Errorf("artifact_url not found for scan_id: %s", body.ScanID)
+    }
+
+    var queuedID anldom.AnalysisID
+    if body.AnalysisID != "" {
+        queuedID = anldom.AnalysisID(body.AnalysisID)
+        // Mark status as retry_requested
+        r.aiSvc.UpdateAnalysisStatus(req.Context(), tenant, body.ScanID, queuedID, scan.ArtifactURL, map[string]any{
+            "status":      "retry_requested",
+            "requestedAt": time.Now(),
+        })
+    } else {
+        // Create a new queued record to track this retry
+        queued, err := r.aiSvc.QueueAnalysis(req.Context(), tenant, body.ScanID, scan.ArtifactURL)
+        if err != nil {
+            return err
+        }
+        queuedID = queued.ID
+    }
+
+    // Start background work immediately (ignores scheduled backoff)
+    go func(id anldom.AnalysisID) {
+        if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, body.ScanID, id, scan.ArtifactURL); err != nil {
+            fmt.Printf("manual retry ai analyze error tenant=%s scan_id=%s: %v\n", tenant, body.ScanID, err)
+        }
+    }(queuedID)
+
+    // Respond 202
+    resp := map[string]any{
+        "status":       "queued",
+        "tenant":       tenant,
+        "scan_id":      body.ScanID,
+        "analysis_id":  queuedID,
+        "message":      "AI analysis retry queued, akan diproses di background",
+        "queuedAt":     time.Now(),
     }
     w.Header().Set("Content-Type", "application/json")
     w.WriteHeader(http.StatusAccepted)

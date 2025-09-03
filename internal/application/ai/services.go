@@ -98,35 +98,118 @@ func (s *Service) QueueAnalysis(ctx context.Context, tenant, scanID, fileURL str
     return a, nil
 }
 
-// AnalyzeAndStoreWithID performs analysis and upserts into security_analyze using a fixed ID.
-// If a queued record was created earlier with the same ID, the created_at remains intact
-// because the repo does not update that column on duplicate.
-func (s *Service) AnalyzeAndStoreWithID(ctx context.Context, tenant, scanID string, id analyst.AnalysisID, fileURL string) (*analyst.Analysis, error) {
-    result, err := s.client.Analyze(ctx, fileURL)
-    if err != nil {
-        return nil, err
+// QueueAnalysisWithID does QueueAnalysis but using a provided analysis ID.
+func (s *Service) QueueAnalysisWithID(ctx context.Context, tenant, scanID, fileURL string, id analyst.AnalysisID) (*analyst.Analysis, error) {
+    if s.analystRepo == nil {
+        return &analyst.Analysis{
+            ID:        id,
+            TenantID:  tenant,
+            ScanID:    scanID,
+            FileURL:   fileURL,
+            Result:    `{"status":"queued"}`,
+            CreatedAt: time.Now(),
+        }, nil
     }
-
     a := &analyst.Analysis{
         ID:        id,
         TenantID:  tenant,
         ScanID:    scanID,
         FileURL:   fileURL,
-        Result:    result,
-        CreatedAt: time.Now(), // will be ignored on duplicate update
+        Result:    `{"status":"queued"}`,
+        CreatedAt: time.Now(),
     }
-    if s.analystRepo != nil {
-        if err := s.analystRepo.Save(ctx, a); err != nil {
-            return nil, err
-        }
-    }
-
-    // extract counts from AI result and update the related scan if possible
-    if cc := extractCountsFromAIResult(result); cc != nil && s.scansRepo != nil && scanID != "" {
-        _ = s.scansRepo.UpdateCounts(ctx, tenant, scans.ScanID(scanID), *cc)
+    if err := s.analystRepo.Save(ctx, a); err != nil {
+        return nil, err
     }
     return a, nil
 }
+
+// AnalyzeAndStoreWithID performs analysis and upserts into security_analyze using a fixed ID.
+// If a queued record was created earlier with the same ID, the created_at remains intact
+// because the repo does not update that column on duplicate.
+func (s *Service) AnalyzeAndStoreWithID(ctx context.Context, tenant, scanID string, id analyst.AnalysisID, fileURL string) (*analyst.Analysis, error) {
+    // retry policy
+    maxAttempts := 3
+    backoff := []time.Duration{30 * time.Second, 2 * time.Minute, 5 * time.Minute}
+    attempt := 0
+
+    for {
+        result, err := s.client.Analyze(ctx, fileURL)
+        if err != nil {
+            // handle quota: mark status and optionally retry
+            if err == domai.ErrQuotaExceeded {
+                attempt++
+                nextDelay := backoff[min(attempt-1, len(backoff)-1)]
+                nextRetry := time.Now().Add(nextDelay)
+                s.updateAnalysisStatus(ctx, tenant, scanID, id, fileURL, map[string]any{
+                    "status":       "retry_scheduled",
+                    "reason":       "quota_exceeded",
+                    "attempt":      attempt,
+                    "nextRetryAt":  nextRetry,
+                })
+                if attempt >= maxAttempts {
+                    // give up and mark failed
+                    s.updateAnalysisStatus(ctx, tenant, scanID, id, fileURL, map[string]any{
+                        "status":  "failed",
+                        "reason":  "quota_exceeded",
+                        "attempt": attempt,
+                    })
+                    return nil, err
+                }
+                time.Sleep(nextDelay)
+                continue
+            }
+            // other errors → mark failed
+            s.updateAnalysisStatus(ctx, tenant, scanID, id, fileURL, map[string]any{
+                "status": "failed",
+                "error":  err.Error(),
+            })
+            return nil, err
+        }
+
+        a := &analyst.Analysis{
+            ID:        id,
+            TenantID:  tenant,
+            ScanID:    scanID,
+            FileURL:   fileURL,
+            Result:    result,
+            CreatedAt: time.Now(),
+        }
+        if s.analystRepo != nil {
+            if err := s.analystRepo.Save(ctx, a); err != nil {
+                return nil, err
+            }
+        }
+
+        if cc := extractCountsFromAIResult(result); cc != nil && s.scansRepo != nil && scanID != "" {
+            _ = s.scansRepo.UpdateCounts(ctx, tenant, scans.ScanID(scanID), *cc)
+        }
+        return a, nil
+    }
+}
+
+// updateAnalysisStatus upserts a lightweight JSON status into analysis.result_json
+func (s *Service) updateAnalysisStatus(ctx context.Context, tenant, scanID string, id analyst.AnalysisID, fileURL string, payload map[string]any) {
+    if s.analystRepo == nil {
+        return
+    }
+    b, _ := json.Marshal(payload)
+    _ = s.analystRepo.Save(ctx, &analyst.Analysis{
+        ID:        id,
+        TenantID:  tenant,
+        ScanID:    scanID,
+        FileURL:   fileURL,
+        Result:    string(b),
+        CreatedAt: time.Now(),
+    })
+}
+
+// UpdateAnalysisStatus is the exported version of updateAnalysisStatus for use by HTTP layer.
+func (s *Service) UpdateAnalysisStatus(ctx context.Context, tenant, scanID string, id analyst.AnalysisID, fileURL string, payload map[string]any) {
+    s.updateAnalysisStatus(ctx, tenant, scanID, id, fileURL, payload)
+}
+
+func min(a, b int) int { if a < b { return a }; return b }
 
 // extractCountsFromAIResult attempts to parse a counts object from the AI JSON.
 func extractCountsFromAIResult(result string) *scans.SeverityCounts {

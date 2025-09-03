@@ -1,6 +1,8 @@
 package httpserver
 
 import (
+    "database/sql"
+    "errors"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -43,11 +45,15 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, hmacKey []byte)
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
 func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, req *http.Request) {
-		if err := h(w, req); err != nil {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-		}
-	}
+    return func(w http.ResponseWriter, req *http.Request) {
+        if err := h(w, req); err != nil {
+            if errors.Is(err, sql.ErrNoRows) {
+                http.Error(w, "not found", http.StatusNotFound)
+                return
+            }
+            http.Error(w, err.Error(), http.StatusInternalServerError)
+        }
+    }
 }
 
 // POST /v1/{tenant}/ai/analyze

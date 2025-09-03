@@ -189,21 +189,54 @@ func parseZAPHTML(path string) (SeverityCounts, error) {
     }
     s := strings.ToLower(string(b))
 
-    // Use regex to count risk labels; this is heuristic and may slightly overcount
+    // Use regex to count risk labels; this is heuristic and may slightly over/undercount
     // depending on the HTML template.
     var c SeverityCounts
-    rxHigh := regexp.MustCompile(`(?i)risk\s*:?\s*high`)
-    rxMed := regexp.MustCompile(`(?i)risk\s*:?\s*medium`)
-    rxLow := regexp.MustCompile(`(?i)risk\s*:?\s*low`)
-    rxInfo := regexp.MustCompile(`(?i)risk\s*:?\s*(informational|info)`) // map to Low
+    rxHigh := regexp.MustCompile(`risk\s*:?\s*high`)
+    rxMed := regexp.MustCompile(`risk\s*:?\s*medium`)
+    rxLow := regexp.MustCompile(`risk\s*:?\s*low`)
+    rxInfo := regexp.MustCompile(`risk\s*:?\s*(informational|info)`) // map to Low
 
-    // Count by distinct matches; subtract informational from low if both trigger
+    // Primary heuristic based on "Risk: High/Medium/Low" labels in classic ZAP report
     c.High = len(rxHigh.FindAllStringIndex(s, -1))
     c.Medium = len(rxMed.FindAllStringIndex(s, -1))
     low := len(rxLow.FindAllStringIndex(s, -1))
     info := len(rxInfo.FindAllStringIndex(s, -1))
     c.Low = low + info
     c.Total = c.High + c.Medium + c.Low
+
+    // Fallback: newer templates may use classes like severity-high or risk-high, or "Risk Level: High"
+    if c.Total == 0 {
+        var f SeverityCounts
+        // class-based matches
+        rxClass := regexp.MustCompile(`class\s*=\s*\"(?:risk|severity)-(high|medium|low|informational|info)\"`)
+        for _, m := range rxClass.FindAllStringSubmatch(s, -1) {
+            switch m[1] {
+            case "high":
+                f.High++
+            case "medium":
+                f.Medium++
+            case "low", "informational", "info":
+                f.Low++
+            }
+        }
+        // textual "risk level: x"
+        rxLevel := regexp.MustCompile(`risk\s*level\s*:?\s*(high|medium|low|informational|info)`)
+        for _, m := range rxLevel.FindAllStringSubmatch(s, -1) {
+            switch m[1] {
+            case "high":
+                f.High++
+            case "medium":
+                f.Medium++
+            case "low", "informational", "info":
+                f.Low++
+            }
+        }
+        f.Total = f.High + f.Medium + f.Low
+        if f.Total > 0 {
+            return f, nil
+        }
+    }
 
     return c, nil
 }

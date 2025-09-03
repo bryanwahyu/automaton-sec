@@ -20,26 +20,37 @@ RUN apt-get update --fix-missing \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt
-#==== insstall Gitleaks ====
-RUN wget https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_linux_x64.tar.gz \
-    && tar zxvf gitleaks_8.18.1_linux_x64.tar.gz \
-    && mv gitleaks /usr/local/bin/ \
-    && rm gitleaks_8.18.1_linux_x64.tar.gz \
-    && gitleaks --version
+#==== install Gitleaks (arch-aware) ====
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    if [ "$ARCH" = "amd64" ]; then GL_ARCH=linux_x64; else GL_ARCH=linux_arm64; fi; \
+    wget -q https://github.com/gitleaks/gitleaks/releases/download/v8.18.1/gitleaks_8.18.1_${GL_ARCH}.tar.gz; \
+    tar zxf gitleaks_8.18.1_${GL_ARCH}.tar.gz; \
+    mv gitleaks /usr/local/bin/; \
+    chmod +x /usr/local/bin/gitleaks; \
+    rm gitleaks_8.18.1_${GL_ARCH}.tar.gz; \
+    gitleaks version
     
-#==== Instal Trivy CLI ====
-RUN wget https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_Linux-64bit.tar.gz \
-    && tar zxvf trivy_0.65.0_Linux-64bit.tar.gz \
-    && mv trivy /usr/local/bin/ \
-    && rm trivy_0.65.0_Linux-64bit.tar.gz \
-    && trivy --version
+#==== install Trivy CLI (arch-aware) ====
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    if [ "$ARCH" = "amd64" ]; then TR_ARCH=Linux-64bit; else TR_ARCH=Linux-ARM64; fi; \
+    wget -q https://github.com/aquasecurity/trivy/releases/download/v0.65.0/trivy_0.65.0_${TR_ARCH}.tar.gz; \
+    tar zxf trivy_0.65.0_${TR_ARCH}.tar.gz; \
+    mv trivy /usr/local/bin/; \
+    chmod +x /usr/local/bin/trivy; \
+    rm trivy_0.65.0_${TR_ARCH}.tar.gz; \
+    trivy --version
 
-# === Install Nuclei ===
-RUN wget https://github.com/projectdiscovery/nuclei/releases/download/v3.3.5/nuclei_3.3.5_linux_amd64.zip \
-    && unzip nuclei_3.3.5_linux_amd64.zip -d /usr/local/bin \
-    && rm nuclei_3.3.5_linux_amd64.zip \
-    && chmod +x /usr/local/bin/nuclei \
-    && nuclei -update-templates
+# === Install Nuclei (arch-aware) ===
+RUN set -eux; \
+    ARCH="$(dpkg --print-architecture)"; \
+    if [ "$ARCH" = "amd64" ]; then NU_ARCH=linux_amd64; else NU_ARCH=linux_arm64; fi; \
+    wget -q https://github.com/projectdiscovery/nuclei/releases/download/v3.3.5/nuclei_3.3.5_${NU_ARCH}.zip; \
+    unzip -q nuclei_3.3.5_${NU_ARCH}.zip -d /usr/local/bin; \
+    rm nuclei_3.3.5_${NU_ARCH}.zip; \
+    chmod +x /usr/local/bin/nuclei; \
+    nuclei -update-templates
 
 # === Install ZAP (Simple Approach) ===
 # Download ZAP JAR

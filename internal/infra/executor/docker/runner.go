@@ -68,7 +68,7 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 
 		// Use unique session and config settings to avoid conflicts
 		sessionId := fmt.Sprintf("scan-%d", time.Now().UnixNano())
-		
+
 		// Create session directory in the same directory as the artifact
 		sessionDir := filepath.Join(filepath.Dir(absArtifactPath), fmt.Sprintf("zap-session-%d", time.Now().UnixNano()))
 		if err := os.MkdirAll(sessionDir, 0777); err != nil {
@@ -78,12 +78,12 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 
 		// Use the full path for the session
 		sessionPath := filepath.Join(sessionDir, "zap.session")
-		
+
 		cmd = exec.CommandContext(ctx,
 			"zap.sh",
-			"-cmd",           // Run in command line mode
-			"-silent",        // Prevent unsolicited requests
-			"-nostdout",      // Disable standard output logging
+			"-cmd",      // Run in command line mode
+			"-silent",   // Prevent unsolicited requests
+			"-nostdout", // Disable standard output logging
 			"-config", "database.recoverylog=false",
 			"-config", "api.disablekey=true",
 			"-quickurl", req.Target,

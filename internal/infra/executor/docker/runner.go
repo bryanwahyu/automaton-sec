@@ -65,11 +65,19 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		if err != nil {
 			return domain.RunResult{}, fmt.Errorf("failed to get absolute path: %w", err)
 		}
+		// Create unique ZAP home directory for this scan
+		zapHome := filepath.Join("./temp", fmt.Sprintf("zap-home-%d", time.Now().UnixNano()))
+		if err := os.MkdirAll(zapHome, 0755); err != nil {
+			return domain.RunResult{}, fmt.Errorf("failed to create ZAP home dir: %w", err)
+		}
+		defer os.RemoveAll(zapHome) // Clean up after scan
+
 		cmd = exec.CommandContext(ctx,
-			"zap.sh", "-cmd", 
-			"-quickurl", req.Target, 
-			"-quickout", absArtifactPath, 
+			"zap.sh", "-cmd",
+			"-quickurl", req.Target,
+			"-quickout", absArtifactPath,
 			"-quickprogress",
+			"-dir", zapHome, // Use unique home directory
 		)
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"
@@ -110,13 +118,13 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		return domain.RunResult{}, fmt.Errorf("output file not created: %s, command output: %s", artifactPath, string(out))
 	}
 
-    counts, _ := domain.ParseSeverityCounts(req.Tool, artifactPath)
+	counts, _ := domain.ParseSeverityCounts(req.Tool, artifactPath)
 
-    return domain.RunResult{
-        Counts:            counts,
-        LocalArtifactPath: artifactPath,
-        RawFormat:         rawFormat,
-        ExitCode:          exitCode,
-        DurationMS:        duration,
-    }, nil
+	return domain.RunResult{
+		Counts:            counts,
+		LocalArtifactPath: artifactPath,
+		RawFormat:         rawFormat,
+		ExitCode:          exitCode,
+		DurationMS:        duration,
+	}, nil
 }

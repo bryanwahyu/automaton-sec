@@ -69,16 +69,20 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		// Use unique session and config settings to avoid conflicts
 		sessionId := fmt.Sprintf("scan-%d", time.Now().UnixNano())
 		
+		// Generate a unique session ID for this scan
+		sessionID := fmt.Sprintf("zap-scan-%d", time.Now().UnixNano())
+		
 		cmd = exec.CommandContext(ctx,
-			"zap.sh", "-cmd",
+			"zap.sh",
+			"-cmd",           // Run in command line mode
+			"-silent",        // Prevent unsolicited requests
+			"-nostdout",      // Disable standard output logging
+			"-config", "database.recoverylog=false",
+			"-config", "api.disablekey=true",
 			"-quickurl", req.Target,
 			"-quickout", absArtifactPath,
 			"-quickprogress",
-			"-config", "database.recoverylog=false",
-			"-config", "api.disablekey=true",
-			"-config", fmt.Sprintf("scanner.sessionId=%s", sessionId),
-			"-silent",
-			"-nosplash",
+			"-newsession", sessionID, // Use unique session for each scan
 		)
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"

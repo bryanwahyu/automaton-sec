@@ -58,10 +58,15 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1
     && tar -xzf ZAP_2.16.1_Linux.tar.gz -C /opt \
     && rm ZAP_2.16.1_Linux.tar.gz
 
-# Create simple ZAP wrapper scripts
+# Create ZAP directories with proper permissions
+RUN mkdir -p /zap/wrk /zap/tmp \
+    && chmod -R 777 /zap
+
+# Create simple ZAP wrapper scripts with proper working directory
 RUN echo '#!/bin/bash' > /usr/local/bin/zap.sh \
-    && echo 'cd /opt/ZAP_2.16.1' >> /usr/local/bin/zap.sh \
-    && echo 'java -jar zap-2.16.1.jar "$@"' >> /usr/local/bin/zap.sh \
+    && echo 'cd /zap/wrk' >> /usr/local/bin/zap.sh \
+    && echo 'JAVA_OPTS="-Xmx512m -Djava.io.tmpdir=/zap/tmp/"' >> /usr/local/bin/zap.sh \
+    && echo 'exec java $JAVA_OPTS -jar /opt/ZAP_2.16.1/zap-2.16.1.jar "$@"' >> /usr/local/bin/zap.sh \
     && chmod +x /usr/local/bin/zap.sh
 
 # Download and setup ZAP baseline script
@@ -87,8 +92,7 @@ RUN echo "=== ZAP INSTALLATION TEST ===" \
 
 # Create user and set ownership
 RUN useradd -m appuser \
-    && mkdir -p /home/appuser/.ZAP \
-    && chown -R appuser:appuser /opt/ZAP_2.16.1 /home/appuser/.ZAP
+    && chown -R appuser:appuser /opt/ZAP_2.16.1 /zap
 
 # Copy and setup application
 WORKDIR /app

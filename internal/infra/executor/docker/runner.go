@@ -69,8 +69,15 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		// Use unique session and config settings to avoid conflicts
 		sessionId := fmt.Sprintf("scan-%d", time.Now().UnixNano())
 		
-		// Generate a unique session ID for this scan
-		sessionID := fmt.Sprintf("zap-scan-%d", time.Now().UnixNano())
+		// Create session directory in the same directory as the artifact
+		sessionDir := filepath.Join(filepath.Dir(absArtifactPath), fmt.Sprintf("zap-session-%d", time.Now().UnixNano()))
+		if err := os.MkdirAll(sessionDir, 0777); err != nil {
+			return domain.RunResult{}, fmt.Errorf("failed to create session dir: %w", err)
+		}
+		defer os.RemoveAll(sessionDir)
+
+		// Use the full path for the session
+		sessionPath := filepath.Join(sessionDir, "zap.session")
 		
 		cmd = exec.CommandContext(ctx,
 			"zap.sh",
@@ -82,7 +89,7 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			"-quickurl", req.Target,
 			"-quickout", absArtifactPath,
 			"-quickprogress",
-			"-newsession", sessionID, // Use unique session for each scan
+			"-newsession", sessionPath,
 		)
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"

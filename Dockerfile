@@ -100,4 +100,4 @@ RUN chmod +x /app/security-api && chown -R appuser:appuser /app
 USER appuser
 
 ENTRYPOINT ["./security-api"]
-EXPOSE 8000
+EXPOSE 5000

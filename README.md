@@ -26,7 +26,7 @@ cd automation-scan
 Edit `config.yaml` with your database and MinIO credentials:
 ```yaml
 server:
-  port: 8000
+  port: 5000
 database:
   host: <your-mysql-host>
   port: 3306
@@ -55,7 +55,7 @@ Import the SQL schema from `internal/infra/db/mysql/migration.sql` into your MyS
 go run main.go
 ```
 
-The API will be available at `http://localhost:8000` by default.
+The API will be available at `http://localhost:5000` by default.
 
 ## Project Structure
 - `main.go` - Entry point
@@ -77,4 +77,3 @@ Copyright (c) 2023 Bryan Wahyu
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
 in the Software without restriction, including without limitation the rights
-

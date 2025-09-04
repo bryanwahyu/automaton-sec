@@ -65,19 +65,26 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		if err != nil {
 			return domain.RunResult{}, fmt.Errorf("failed to get absolute path: %w", err)
 		}
-		// Create unique ZAP home directory for this scan
-		zapHome := filepath.Join("./temp", fmt.Sprintf("zap-home-%d", time.Now().UnixNano()))
-		if err := os.MkdirAll(zapHome, 0755); err != nil {
+		// Use a subdirectory in the artifact path's parent directory for ZAP home
+		zapHome := filepath.Join(filepath.Dir(absArtifactPath), fmt.Sprintf("zap-%d", time.Now().UnixNano()))
+		
+		// Create ZAP home directory with world-writable permissions
+		if err := os.MkdirAll(zapHome, 0777); err != nil {
 			return domain.RunResult{}, fmt.Errorf("failed to create ZAP home dir: %w", err)
 		}
-		defer os.RemoveAll(zapHome) // Clean up after scan
+		
+		// Clean up after scan completes
+		defer func() {
+			_ = os.RemoveAll(zapHome)
+		}()
 
 		cmd = exec.CommandContext(ctx,
 			"zap.sh", "-cmd",
 			"-quickurl", req.Target,
 			"-quickout", absArtifactPath,
 			"-quickprogress",
-			"-dir", zapHome, // Use unique home directory
+			"-config", "database.recoverylog=false", // Disable recovery log to prevent permission issues
+			"-dir", zapHome,
 		)
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"

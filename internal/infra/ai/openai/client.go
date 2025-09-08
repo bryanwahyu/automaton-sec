@@ -11,7 +11,7 @@ import (
     "github.com/sashabaranov/go-openai"
 )
 
-const maxTokens = 2048
+const maxTokens =  640000
 
 type Client struct {
     *openai.Client

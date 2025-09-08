@@ -266,6 +266,12 @@ func (s *Service) Paginate(ctx context.Context, tenant string, page, pageSize in
 		return domain.PaginatedResult{}, err
 	}
 
+	// Add pagination metadata to result
+	result.Total = total
+	result.Page = page
+	result.PageSize = pageSize
+	result.TotalPages = totalPages
+
 	return result, nil
 }
 

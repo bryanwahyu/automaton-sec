@@ -66,7 +66,7 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			return domain.RunResult{}, fmt.Errorf("failed to get absolute path: %w", err)
 		}
 
-        // Use unique session and config settings to avoid conflicts
+		// Use unique session and config settings to avoid conflicts
 
 		// Use ZAP's working directory for the session
 		sessionPath := filepath.Join("/zap/wrk", fmt.Sprintf("session-%d", time.Now().UnixNano()))

@@ -54,10 +54,11 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, serrRepo serrdo
 	})
 
 	mux.Route("/v1/{tenant}", func(rt chi.Router) {
-        rt.Post("/webhook/security-scan", r.wrap(r.handleTriggerScan))
-        rt.Post("/scans/{id}/retry", r.wrap(r.handleRetryScan))
-        rt.Get("/scans/{id}/errors", r.wrap(r.handleListScanErrors))
+		rt.Post("/webhook/security-scan", r.wrap(r.handleTriggerScan))
+		rt.Post("/scans/{id}/retry", r.wrap(r.handleRetryScan))
+		rt.Get("/scans/{id}/errors", r.wrap(r.handleListScanErrors))
 		rt.Get("/scans/latest", r.wrap(r.handleLatest))
+		rt.Get("/scans", r.wrap(r.handleListScans)) // New endpoint for paginated list
 		rt.Get("/scans/{id}", r.wrap(r.handleGet))
 		rt.Get("/summary", r.wrap(r.handleSummary))
 		rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
@@ -258,11 +259,11 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 			// Simpan error ke tabel khusus supaya mudah dicek
 			if r.serrRepo != nil {
 				_ = r.serrRepo.Save(context.Background(), &serrdom.ScanError{
-					TenantID:   tenant,
-					ScanID:     result.ID,
-					Tool:       body.Tool,
-					Phase:      "trigger",
-					Message:    err.Error(),
+					TenantID:    tenant,
+					ScanID:      result.ID,
+					Tool:        body.Tool,
+					Phase:       "trigger",
+					Message:     err.Error(),
 					DetailsJSON: `{"status":"error","type":"scan_error","time":"` + time.Now().Format(time.RFC3339Nano) + `"}`,
 				})
 			}
@@ -290,18 +291,73 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 	return json.NewEncoder(w).Encode(resp)
 }
 
-// GET /v1/{tenant}/scans/latest?limit=20
+// GET /v1/{tenant}/scans/latest?limit=20&cursor_time=2006-01-02T15:04:05Z&cursor_id=abc-123
 func (r *Router) handleLatest(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	if limit <= 0 {
+		limit = 20 // default limit
+	}
 
-	list, err := r.scansSvc.Latest(req.Context(), tenant, limit)
+	cursorTime := req.URL.Query().Get("cursor_time")
+	cursorID := req.URL.Query().Get("cursor_id")
+
+	var list []*domain.Scan
+	var err error
+
+	// Track if we're on the first page
+	isFirstPage := cursorTime == "" || cursorID == ""
+
+	if !isFirstPage {
+		// Parse cursor time
+		t, err := time.Parse(time.RFC3339, cursorTime)
+		if err != nil {
+			return fmt.Errorf("invalid cursor_time format: %v", err)
+		}
+		list, err = r.scansSvc.Cursor(req.Context(), tenant, t, cursorID, limit)
+	} else {
+		list, err = r.scansSvc.Latest(req.Context(), tenant, limit)
+	}
 	if err != nil {
 		return err
 	}
 
+	// Build response with metadata
+	meta := map[string]interface{}{
+		"limit":         limit,
+		"has_more":      len(list) == limit,
+		"is_first_page": isFirstPage,
+	}
+
+	// Add current cursor information
+	if !isFirstPage {
+		meta["current_cursor"] = map[string]interface{}{
+			"cursor_time": cursorTime,
+			"cursor_id":   cursorID,
+		}
+	}
+
+	// Add next cursor if we have more results
+	if len(list) == limit {
+		lastItem := list[len(list)-1]
+		meta["next_cursor"] = map[string]interface{}{
+			"cursor_time": lastItem.TriggeredAt.Format(time.RFC3339),
+			"cursor_id":   string(lastItem.ID),
+			"next_url": fmt.Sprintf("/v1/%s/scans/latest?limit=%d&cursor_time=%s&cursor_id=%s",
+				tenant,
+				limit,
+				lastItem.TriggeredAt.Format(time.RFC3339),
+				string(lastItem.ID)),
+		}
+	}
+
+	response := map[string]interface{}{
+		"data": list,
+		"meta": meta,
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(list)
+	return json.NewEncoder(w).Encode(response)
 }
 
 // GET /v1/{tenant}/scans/{id}
@@ -331,58 +387,92 @@ func (r *Router) handleSummary(w http.ResponseWriter, req *http.Request) error {
 	w.Header().Set("Content-Type", "application/json")
 	return json.NewEncoder(w).Encode(summary)
 }
+
+// GET /v1/{tenant}/scans?page=1&page_size=20&target=example.com
+func (r *Router) handleListScans(w http.ResponseWriter, req *http.Request) error {
+	tenant := chi.URLParam(req, "tenant")
+	page, _ := strconv.Atoi(req.URL.Query().Get("page"))
+	pageSize, _ := strconv.Atoi(req.URL.Query().Get("page_size"))
+	target := req.URL.Query().Get("target")
+
+	// Build filters
+	filters := make(map[string]interface{})
+	if target != "" {
+		filters["target"] = target
+	}
+
+	// Add other possible filters
+	if tool := req.URL.Query().Get("tool"); tool != "" {
+		filters["tool"] = tool
+	}
+	if status := req.URL.Query().Get("status"); status != "" {
+		filters["status"] = status
+	}
+	if branch := req.URL.Query().Get("branch"); branch != "" {
+		filters["branch"] = branch
+	}
+
+	result, err := r.scansSvc.Paginate(req.Context(), tenant, page, pageSize, filters)
+	if err != nil {
+		return err
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(result)
+}
+
 // POST /v1/{tenant}/scans/{id}/retry
 // Jalankan ulang scan yang sebelumnya error/failed. Dijalankan di background.
 func (r *Router) handleRetryScan(w http.ResponseWriter, req *http.Request) error {
-    tenant := chi.URLParam(req, "tenant")
-    id := chi.URLParam(req, "id")
+	tenant := chi.URLParam(req, "tenant")
+	id := chi.URLParam(req, "id")
 
-    // Jalankan di background supaya respons cepat
-    go func() {
-        _ = r.scansSvc.UpdateStatus(tenant, "running")
-        result, err := r.scansSvc.RetryScan(context.Background(), tenant, domain.ScanID(id))
-        if err != nil {
-            fmt.Printf("retry scan error tenant=%s id=%s: %v\n", tenant, id, err)
-            _ = r.scansSvc.UpdateStatus(tenant, "error")
-            if r.serrRepo != nil {
-                _ = r.serrRepo.Save(context.Background(), &serrdom.ScanError{
-                    TenantID:   tenant,
-                    ScanID:     id,
-                    Phase:      "retry",
-                    Message:    err.Error(),
-                    DetailsJSON: `{"status":"error","type":"scan_error_retry","time":"` + time.Now().Format(time.RFC3339Nano) + `"}`,
-                })
-            }
-            return
-        }
-        _ = r.scansSvc.MarkDone(tenant, result)
-        fmt.Printf("retry scan finished tenant=%s id=%s artifact=%s\n", tenant, id, result.ArtifactURL)
-    }()
+	// Jalankan di background supaya respons cepat
+	go func() {
+		_ = r.scansSvc.UpdateStatus(tenant, "running")
+		result, err := r.scansSvc.RetryScan(context.Background(), tenant, domain.ScanID(id))
+		if err != nil {
+			fmt.Printf("retry scan error tenant=%s id=%s: %v\n", tenant, id, err)
+			_ = r.scansSvc.UpdateStatus(tenant, "error")
+			if r.serrRepo != nil {
+				_ = r.serrRepo.Save(context.Background(), &serrdom.ScanError{
+					TenantID:    tenant,
+					ScanID:      id,
+					Phase:       "retry",
+					Message:     err.Error(),
+					DetailsJSON: `{"status":"error","type":"scan_error_retry","time":"` + time.Now().Format(time.RFC3339Nano) + `"}`,
+				})
+			}
+			return
+		}
+		_ = r.scansSvc.MarkDone(tenant, result)
+		fmt.Printf("retry scan finished tenant=%s id=%s artifact=%s\n", tenant, id, result.ArtifactURL)
+	}()
 
-    resp := map[string]any{
-        "status":  "queued",
-        "tenant":  tenant,
-        "scan_id": id,
-        "message": "retry started in background",
-        "queuedAt": time.Now(),
-    }
-    w.Header().Set("Content-Type", "application/json")
-    w.WriteHeader(http.StatusAccepted)
-    return json.NewEncoder(w).Encode(resp)
+	resp := map[string]any{
+		"status":   "queued",
+		"tenant":   tenant,
+		"scan_id":  id,
+		"message":  "retry started in background",
+		"queuedAt": time.Now(),
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	return json.NewEncoder(w).Encode(resp)
 }
 
 // GET /v1/{tenant}/scans/{id}/errors?limit=20
 func (r *Router) handleListScanErrors(w http.ResponseWriter, req *http.Request) error {
-    tenant := chi.URLParam(req, "tenant")
-    id := chi.URLParam(req, "id")
-    limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
-    if r.serrRepo == nil {
-        return fmt.Errorf("errors repository not configured")
-    }
-    list, err := r.serrRepo.ListByScan(req.Context(), tenant, id, limit)
-    if err != nil {
-        return err
-    }
-    w.Header().Set("Content-Type", "application/json")
-    return json.NewEncoder(w).Encode(list)
+	tenant := chi.URLParam(req, "tenant")
+	id := chi.URLParam(req, "id")
+	limit, _ := strconv.Atoi(req.URL.Query().Get("limit"))
+	if r.serrRepo == nil {
+		return fmt.Errorf("errors repository not configured")
+	}
+	list, err := r.serrRepo.ListByScan(req.Context(), tenant, id, limit)
+	if err != nil {
+		return err
+	}
+	w.Header().Set("Content-Type", "application/json")
+	return json.NewEncoder(w).Encode(list)
 }

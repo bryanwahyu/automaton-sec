@@ -3,19 +3,20 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"fmt"
+	"math"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
 )
 
 type ScanRepository struct {
-    db *sql.DB
+	db *sql.DB
 }
 
 func NewScanRepository(db *sql.DB) *ScanRepository {
 	return &ScanRepository{db: db}
 }
-
 
 // Save insert/update Scan record
 func (r *ScanRepository) Save(ctx context.Context, s *domain.Scan) error {
@@ -49,7 +50,6 @@ ON DUPLICATE KEY UPDATE
 	)
 	return err
 }
-
 
 // Get by ID + Tenant
 func (r *ScanRepository) Get(ctx context.Context, tenant string, id domain.ScanID) (*domain.Scan, error) {
@@ -135,7 +135,7 @@ WHERE tenant_id=? AND triggered_at >= ?;
 }
 
 // Paginate with offset + limit (classic pagination)
-func (r *ScanRepository) Paginate(ctx context.Context, tenant string, page, pageSize int) ([]*domain.Scan, error) {
+func (r *ScanRepository) Paginate(ctx context.Context, tenant string, page, pageSize int, filters map[string]interface{}) (domain.PaginatedResult, error) {
 	if page <= 0 {
 		page = 1
 	}
@@ -144,22 +144,44 @@ func (r *ScanRepository) Paginate(ctx context.Context, tenant string, page, page
 	}
 	offset := (page - 1) * pageSize
 
-	const q = `
+	query := `
 SELECT id, tenant_id, triggered_at, tool, target, image, status,
        critical, high, medium, low, findings_total,
        artifact_url, raw_format, duration_ms, source, commit_sha, branch
 FROM security_scans
-WHERE tenant_id=?
-ORDER BY triggered_at DESC, id DESC
-LIMIT ? OFFSET ?;
-`
-	rows, err := r.db.QueryContext(ctx, q, tenant, pageSize, offset)
+WHERE tenant_id=?`
+
+	args := []interface{}{tenant}
+
+	// Add filters to the query
+	if filters != nil {
+		for key, value := range filters {
+			switch key {
+			case "tool":
+				query += " AND tool = ?"
+				args = append(args, value)
+			case "status":
+				query += " AND status = ?"
+				args = append(args, value)
+			case "target":
+				query += " AND target LIKE ?"
+				args = append(args, "%"+value.(string)+"%")
+			case "branch":
+				query += " AND branch = ?"
+				args = append(args, value)
+			}
+		}
+	}
+
+	query += "\nORDER BY triggered_at DESC, id DESC\nLIMIT ? OFFSET ?"
+	args = append(args, pageSize, offset)
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
-		return nil, err
+		return domain.PaginatedResult{}, fmt.Errorf("querying scans: %w", err)
 	}
 	defer rows.Close()
 
-	var out []*domain.Scan
+	var scans []*domain.Scan
 	for rows.Next() {
 		var s domain.Scan
 		var crit, hi, med, lo, tot int
@@ -169,13 +191,30 @@ LIMIT ? OFFSET ?;
 			&s.ArtifactURL, &s.RawFormat, &s.DurationMS,
 			&s.Source, &s.CommitSHA, &s.Branch,
 		); err != nil {
-			return nil, err
+			return domain.PaginatedResult{}, fmt.Errorf("scanning row: %w", err)
 		}
 		s.Counts = domain.SeverityCounts{Critical: crit, High: hi, Medium: med, Low: lo, Total: tot}
-		out = append(out, &s)
+		scans = append(scans, &s)
 	}
-	return out, rows.Err()
+	if err = rows.Err(); err != nil {
+		return domain.PaginatedResult{}, fmt.Errorf("iterating rows: %w", err)
+	}
+
+	// Get total count for pagination
+	total, err := r.Count(ctx, tenant, filters)
+	if err != nil {
+		return domain.PaginatedResult{}, fmt.Errorf("getting total count: %w", err)
+	}
+
+	return domain.PaginatedResult{
+		Data:       scans,
+		Page:       page,
+		PageSize:   pageSize,
+		Total: total,
+		TotalPages: int(math.Ceil(float64(total) / float64(pageSize))),
+	}, nil
 }
+
 // UpdateStatus hanya update kolom status
 func (r *ScanRepository) UpdateStatus(ctx context.Context, tenant string, status domain.Status) error {
 	const q = `
@@ -251,7 +290,7 @@ LIMIT ?;
 
 // UpdateCounts updates only the counts columns for a specific scan id
 func (r *ScanRepository) UpdateCounts(ctx context.Context, tenant string, id domain.ScanID, counts domain.SeverityCounts) error {
-    const q = `
+	const q = `
 UPDATE security_scans
 SET critical = ?,
     high = ?,
@@ -259,9 +298,43 @@ SET critical = ?,
     low = ?,
     findings_total = ?
 WHERE tenant_id = ? AND id = ?;`
-    _, err := r.db.ExecContext(ctx, q,
-        counts.Critical, counts.High, counts.Medium, counts.Low, counts.Total,
-        tenant, id,
-    )
-    return err
+	_, err := r.db.ExecContext(ctx, q,
+		counts.Critical, counts.High, counts.Medium, counts.Low, counts.Total,
+		tenant, id,
+	)
+	return err
+}
+
+// Count returns the total number of records matching the given filters
+func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[string]interface{}) (int64, error) {
+	query := "SELECT COUNT(*) FROM security_scans WHERE tenant_id = ?"
+	args := []interface{}{tenant}
+
+	// Add filters to the query
+	if filters != nil {
+		for key, value := range filters {
+			switch key {
+			case "tool":
+				query += " AND tool = ?"
+				args = append(args, value)
+			case "status":
+				query += " AND status = ?"
+				args = append(args, value)
+			case "target":
+				query += " AND target LIKE ?"
+				args = append(args, "%"+value.(string)+"%")
+			case "branch":
+				query += " AND branch = ?"
+				args = append(args, value)
+			}
+		}
+	}
+
+	var count int64
+	err := r.db.QueryRowContext(ctx, query, args...).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+
+	return count, nil
 }

@@ -261,18 +261,19 @@ func (s *Service) Paginate(ctx context.Context, tenant string, page, pageSize in
 	totalPages := (int(total) + pageSize - 1) / pageSize
 
 	// Get paginated data
-	result, err := s.Repo.Paginate(ctx, tenant, page, pageSize, filters)
+	data, err := s.Repo.Paginate(ctx, tenant, page, pageSize, filters)
 	if err != nil {
 		return domain.PaginatedResult{}, err
 	}
 
-	// Add pagination metadata to result
-	result.Total = total
-	result.Page = page
-	result.PageSize = pageSize
-	result.TotalPages = totalPages
-
-	return result, nil
+	// Construct PaginatedResult with pagination metadata
+	return domain.PaginatedResult{
+		Data:       data.Data,
+		Page:       page,
+		PageSize:   pageSize,
+		Total:      total,
+		TotalPages: totalPages,
+	}, nil
 }
 
 // Cursor mengambil data dengan cursor-based pagination

@@ -173,7 +173,7 @@ WHERE tenant_id=?`
 		}
 	}
 
-	query += "\nORDER BY triggered_at DESC, id DESC\nLIMIT ? OFFSET ?"
+	query += "\n LIMIT ? OFFSET ?"
 	args = append(args, pageSize, offset)
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {

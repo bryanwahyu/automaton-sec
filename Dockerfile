@@ -59,8 +59,9 @@ RUN wget https://github.com/zaproxy/zaproxy/releases/download/v2.16.1/ZAP_2.16.1
     && rm ZAP_2.16.1_Linux.tar.gz
 
 # Create ZAP directories with proper permissions
-RUN mkdir -p /zap/wrk /zap/tmp \
-    && chmod -R 777 /zap
+RUN mkdir -p /zap/wrk /zap/tmp /app/temp \
+    && chmod -R 777 /zap /app/temp \
+    && chown -R root:root /zap /app/temp
 
 # Create simple ZAP wrapper scripts with proper working directory
 RUN echo '#!/bin/bash' > /usr/local/bin/zap.sh \

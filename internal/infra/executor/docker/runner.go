@@ -68,15 +68,8 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 
         // Use unique session and config settings to avoid conflicts
 
-		// Create session directory in the same directory as the artifact
-		sessionDir := filepath.Join(filepath.Dir(absArtifactPath), fmt.Sprintf("zap-session-%d", time.Now().UnixNano()))
-		if err := os.MkdirAll(sessionDir, 0777); err != nil {
-			return domain.RunResult{}, fmt.Errorf("failed to create session dir: %w", err)
-		}
-		defer os.RemoveAll(sessionDir)
-
-		// Use the full path for the session
-		sessionPath := filepath.Join(sessionDir, "zap.session")
+		// Use ZAP's working directory for the session
+		sessionPath := filepath.Join("/zap/wrk", fmt.Sprintf("session-%d", time.Now().UnixNano()))
 
 		cmd = exec.CommandContext(ctx,
 			"zap.sh",

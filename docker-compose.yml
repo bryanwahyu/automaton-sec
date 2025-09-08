@@ -12,3 +12,4 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./temp:/app/temp   # folder sementara untuk artifacts
       - ./temp/zap:/zap/wrk   # ZAP working directory
+    user: root   # Temporarily run as root to ensure proper permissions

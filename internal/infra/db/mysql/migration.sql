@@ -34,3 +34,19 @@ CREATE TABLE IF NOT EXISTS security_analyze (
   KEY idx_analyze_scan (scan_id),
   CONSTRAINT fk_analyze_scan FOREIGN KEY (scan_id) REFERENCES security_scans(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Stores scan errors for easier troubleshooting
+CREATE TABLE IF NOT EXISTS security_scan_errors (
+  id           BIGINT       NOT NULL AUTO_INCREMENT,
+  tenant_id    varchar(64)  NOT NULL,
+  scan_id      varchar(64)  NOT NULL,
+  tool         varchar(32),
+  phase        varchar(32),
+  message      text         NOT NULL,
+  details_json json,
+  created_at   datetime(6)  NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+  PRIMARY KEY (id),
+  KEY idx_err_tenant_created (tenant_id, created_at),
+  KEY idx_err_scan (scan_id),
+  CONSTRAINT fk_err_scan FOREIGN KEY (scan_id) REFERENCES security_scans(id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

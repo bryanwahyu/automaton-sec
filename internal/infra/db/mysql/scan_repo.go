@@ -3,6 +3,7 @@ package mysql
 import (
 	"context"
 	"database/sql"
+	"strings"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -31,13 +32,31 @@ ON DUPLICATE KEY UPDATE
  findings_total=VALUES(findings_total),
  artifact_url=VALUES(artifact_url), raw_format=VALUES(raw_format), duration_ms=VALUES(duration_ms);
 `
+	// Ensure non-nullable string fields have safe defaults and numbers fall back to 0
+	tenant := stringOrDash(s.TenantID)
+	tool := stringOrDash(string(s.Tool))
+	status := stringOrDash(string(s.Status))
+	triggered := s.TriggeredAt
+	if triggered.IsZero() {
+		triggered = time.Now()
+	}
+	// Numeric fields (ints) are value types and already default to 0
+
 	_, err := r.db.ExecContext(ctx, q,
-		s.ID, s.TenantID, s.TriggeredAt, s.Tool, s.Target, s.Image, s.Status,
+		s.ID, tenant, triggered, tool, s.Target, s.Image, status,
 		s.Counts.Critical, s.Counts.High, s.Counts.Medium, s.Counts.Low, s.Counts.Total,
 		s.ArtifactURL, s.RawFormat, s.DurationMS,
 		s.Source, s.CommitSHA, s.Branch,
 	)
 	return err
+}
+
+// stringOrDash returns "-" when the input is empty/whitespace
+func stringOrDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "-"
+	}
+	return s
 }
 
 // Get by ID + Tenant

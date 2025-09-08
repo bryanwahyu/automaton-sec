@@ -48,6 +48,7 @@ func main() {
     // init repos
     repo := mysqlp.NewScanRepository(db)
     analystRepo := mysqlp.NewAnalystRepository(db)
+    scanErrRepo := mysqlp.NewScanErrorRepository(db)
 
 	// init minio
 	store, err := minioStore.New(ctx,
@@ -78,8 +79,8 @@ func main() {
 	}
 
 	// init router
-	mux := chi.NewRouter()
-	mux.Mount("/", httpserver.NewRouter(scansSvc, aiSvc, nil))
+    mux := chi.NewRouter()
+    mux.Mount("/", httpserver.NewRouter(scansSvc, aiSvc, scanErrRepo, nil))
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{

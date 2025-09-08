@@ -22,8 +22,9 @@ const (
 type Status string
 
 const (
-	StatusSuccess Status = "success"
-	StatusFailed  Status = "failed"
+    StatusSuccess Status = "success"
+    StatusFailed  Status = "failed"
+    StatusError   Status = "error"
 )
 
 // SeverityCounts value object

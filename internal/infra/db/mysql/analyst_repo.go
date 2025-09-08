@@ -3,6 +3,7 @@ package mysql
 import (
     "context"
     "database/sql"
+    "strings"
     "time"
 
     domain "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
@@ -25,9 +26,31 @@ VALUES (?,?,?,?,?,?)
 ON DUPLICATE KEY UPDATE
   tenant_id=VALUES(tenant_id), scan_id=VALUES(scan_id), file_url=VALUES(file_url), result_json=VALUES(result_json);
 `
-    _, err := r.db.ExecContext(ctx, q, a.ID, a.TenantID, a.ScanID, a.FileURL, a.Result, a.CreatedAt)
+    // Ensure non-nullable fields have safe defaults
+    tenant := stringOrDash(a.TenantID)
+    fileURL := stringOrDash(a.FileURL)
+    result := a.Result
+    if strings.TrimSpace(result) == "" {
+        // result_json column requires valid JSON; use empty object
+        result = "{}"
+    }
+    createdAt := a.CreatedAt
+    if createdAt.IsZero() {
+        createdAt = time.Now()
+    }
+
+    _, err := r.db.ExecContext(ctx, q, a.ID, tenant, a.ScanID, fileURL, result, createdAt)
     return err
 }
+
+// stringOrDash returns "-" when the input is empty/whitespace
+func stringOrDash(s string) string {
+    if strings.TrimSpace(s) == "" {
+        return "-"
+    }
+    return s
+}
+
 
 // Paginate returns a page of analysis records ordered by created_at desc
 func (r *AnalystRepository) Paginate(ctx context.Context, tenant string, page, pageSize int) ([]*domain.Analysis, error) {

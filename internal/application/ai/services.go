@@ -250,3 +250,11 @@ func (s *Service) ListAnalyses(ctx context.Context, tenant string, page, pageSiz
     }
     return s.analystRepo.Paginate(ctx, tenant, page, pageSize)
 }
+
+// LatestByScan gets the most recent analysis for a scan
+func (s *Service) LatestByScan(ctx context.Context, tenant, scanID string) (*analyst.Analysis, error) {
+    if s.analystRepo == nil {
+        return nil, nil
+    }
+    return s.analystRepo.LatestByScan(ctx, tenant, scanID)
+}

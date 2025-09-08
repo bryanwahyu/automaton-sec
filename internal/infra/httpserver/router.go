@@ -55,15 +55,15 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, serrRepo serrdo
 
 	mux.Route("/v1/{tenant}", func(rt chi.Router) {
 		rt.Post("/webhook/security-scan", r.wrap(r.handleTriggerScan))
-		rt.Post("/scans/{id}/retry", r.wrap(r.handleRetryScan))
+		rt.Get("/scans/{id}/retry", r.wrap(r.handleRetryScan))
 		rt.Get("/scans/{id}/errors", r.wrap(r.handleListScanErrors))
 		rt.Get("/scans/latest", r.wrap(r.handleLatest))
 		rt.Get("/scans", r.wrap(r.handleListScans)) // New endpoint for paginated list
 		rt.Get("/scans/{id}", r.wrap(r.handleGet))
 		rt.Get("/summary", r.wrap(r.handleSummary))
-		rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
-		rt.Get("/ai/analyze", r.wrap(r.handleAIAnalyzeList))
-		rt.Post("/ai/analyze/retry", r.wrap(r.handleAIAnalyzeRetry))
+        rt.Post("/ai/analyze", r.wrap(r.handleAIAnalyze))
+        rt.Get("/ai/analyze", r.wrap(r.handleAIAnalyzeList))
+        rt.Get("/ai/analyze/retry", r.wrap(r.handleAIAnalyzeRetry))
 	})
 
 	return mux
@@ -137,65 +137,59 @@ func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error
 	return json.NewEncoder(w).Encode(resp)
 }
 
-// POST /v1/{tenant}/ai/analyze/retry
-// Body: {"scan_id": "<id>", "analysis_id":"<optional-existing-id>"}
+// GET /v1/{tenant}/ai/analyze/retry?scan_id=<id>&analysis_id=<optional-existing-id>
 // Forces an immediate retry by queueing (or marking retry) and starting background analysis.
 func (r *Router) handleAIAnalyzeRetry(w http.ResponseWriter, req *http.Request) error {
-	tenant := chi.URLParam(req, "tenant")
-	var body struct {
-		ScanID     string `json:"scan_id"`
-		AnalysisID string `json:"analysis_id"`
-	}
-	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
-		return err
-	}
-	if body.ScanID == "" {
-		return fmt.Errorf("scan_id is required")
-	}
+    tenant := chi.URLParam(req, "tenant")
+    scanID := req.URL.Query().Get("scan_id")
+    analysisID := req.URL.Query().Get("analysis_id")
+    if scanID == "" {
+        return fmt.Errorf("scan_id is required")
+    }
 
-	// Lookup scan to get artifact URL
-	scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(body.ScanID))
-	if err != nil {
-		return err
-	}
-	if scan == nil || scan.ArtifactURL == "" {
-		return fmt.Errorf("artifact_url not found for scan_id: %s", body.ScanID)
-	}
+    // Lookup scan to get artifact URL
+    scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(scanID))
+    if err != nil {
+        return err
+    }
+    if scan == nil || scan.ArtifactURL == "" {
+        return fmt.Errorf("artifact_url not found for scan_id: %s", scanID)
+    }
 
-	var queuedID anldom.AnalysisID
-	if body.AnalysisID != "" {
-		queuedID = anldom.AnalysisID(body.AnalysisID)
-		// Mark status as retry_requested
-		r.aiSvc.UpdateAnalysisStatus(req.Context(), tenant, body.ScanID, queuedID, scan.ArtifactURL, map[string]any{
-			"status":      "retry_requested",
-			"requestedAt": time.Now(),
-		})
-	} else {
-		// Create a new queued record to track this retry
-		queued, err := r.aiSvc.QueueAnalysis(req.Context(), tenant, body.ScanID, scan.ArtifactURL)
-		if err != nil {
-			return err
-		}
-		queuedID = queued.ID
-	}
+    var queuedID anldom.AnalysisID
+    if analysisID != "" {
+        queuedID = anldom.AnalysisID(analysisID)
+        // Mark status as retry_requested
+        r.aiSvc.UpdateAnalysisStatus(req.Context(), tenant, scanID, queuedID, scan.ArtifactURL, map[string]any{
+            "status":      "retry_requested",
+            "requestedAt": time.Now(),
+        })
+    } else {
+        // Create a new queued record to track this retry
+        queued, err := r.aiSvc.QueueAnalysis(req.Context(), tenant, scanID, scan.ArtifactURL)
+        if err != nil {
+            return err
+        }
+        queuedID = queued.ID
+    }
 
-	// Start background work immediately (ignores scheduled backoff)
-	go func(id anldom.AnalysisID) {
-		if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, body.ScanID, id, scan.ArtifactURL); err != nil {
-			fmt.Printf("manual retry ai analyze error tenant=%s scan_id=%s: %v\n", tenant, body.ScanID, err)
-		}
-	}(queuedID)
+    // Start background work immediately (ignores scheduled backoff)
+    go func(id anldom.AnalysisID) {
+        if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, scanID, id, scan.ArtifactURL); err != nil {
+            fmt.Printf("manual retry ai analyze error tenant=%s scan_id=%s: %v\n", tenant, scanID, err)
+        }
+    }(queuedID)
 
-	// Respond 202
-	resp := map[string]any{
-		"status":      "queued",
-		"tenant":      tenant,
-		"scan_id":     body.ScanID,
-		"analysis_id": queuedID,
-		"message":     "AI analysis retry queued, akan diproses di background",
-		"queuedAt":    time.Now(),
-	}
-	w.Header().Set("Content-Type", "application/json")
+    // Respond 202
+    resp := map[string]any{
+        "status":      "queued",
+        "tenant":      tenant,
+        "scan_id":     scanID,
+        "analysis_id": queuedID,
+        "message":     "AI analysis retry queued, akan diproses di background",
+        "queuedAt":    time.Now(),
+    }
+    w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
 	return json.NewEncoder(w).Encode(resp)
 }
@@ -361,17 +355,60 @@ func (r *Router) handleLatest(w http.ResponseWriter, req *http.Request) error {
 }
 
 // GET /v1/{tenant}/scans/{id}
+// Optional: ?with=analysis (comma-separated supported) to include latest AI analysis
 func (r *Router) handleGet(w http.ResponseWriter, req *http.Request) error {
-	tenant := chi.URLParam(req, "tenant")
-	id := chi.URLParam(req, "id")
+    tenant := chi.URLParam(req, "tenant")
+    id := chi.URLParam(req, "id")
+    withParam := req.URL.Query().Get("with")
 
-	scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(id))
-	if err != nil {
-		return err
-	}
+    scan, err := r.scansSvc.Get(req.Context(), tenant, domain.ScanID(id))
+    if err != nil {
+        return err
+    }
 
-	w.Header().Set("Content-Type", "application/json")
-	return json.NewEncoder(w).Encode(scan)
+    // If with=analysis (or analyze/ai), include latest AI analysis result
+    if withParam != "" {
+        // support comma-separated values
+        includeAnalysis := false
+        for _, p := range splitAndTrim(withParam) {
+            if p == "analysis" || p == "analyze" || p == "ai" {
+                includeAnalysis = true
+                break
+            }
+        }
+        if includeAnalysis {
+            a, _ := r.aiSvc.LatestByScan(req.Context(), tenant, id)
+            resp := map[string]any{
+                "scan":     scan,
+                "analysis": a,
+            }
+            w.Header().Set("Content-Type", "application/json")
+            return json.NewEncoder(w).Encode(resp)
+        }
+    }
+
+    w.Header().Set("Content-Type", "application/json")
+    return json.NewEncoder(w).Encode(scan)
+}
+
+// splitAndTrim splits by comma and trims spaces; empty-safe
+func splitAndTrim(s string) []string {
+    if s == "" {
+        return nil
+    }
+    var out []string
+    start := 0
+    for i := 0; i <= len(s); i++ {
+        if i == len(s) || s[i] == ',' {
+            seg := s[start:i]
+            // trim spaces
+            for len(seg) > 0 && (seg[0] == ' ' || seg[0] == '\t') { seg = seg[1:] }
+            for len(seg) > 0 && (seg[len(seg)-1] == ' ' || seg[len(seg)-1] == '\t') { seg = seg[:len(seg)-1] }
+            if seg != "" { out = append(out, seg) }
+            start = i + 1
+        }
+    }
+    return out
 }
 
 // GET /v1/{tenant}/summary?days=7

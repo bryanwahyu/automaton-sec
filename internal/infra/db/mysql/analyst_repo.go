@@ -78,3 +78,25 @@ LIMIT ? OFFSET ?;
     }
     return out, rows.Err()
 }
+
+// LatestByScan returns the latest analysis for a given scan
+func (r *AnalystRepository) LatestByScan(ctx context.Context, tenant string, scanID string) (*domain.Analysis, error) {
+    const q = `
+SELECT id, tenant_id, scan_id, file_url, result_json, created_at
+FROM security_analyze
+WHERE tenant_id=? AND scan_id=?
+ORDER BY created_at DESC, id DESC
+LIMIT 1;
+`
+    row := r.db.QueryRowContext(ctx, q, tenant, scanID)
+    var a domain.Analysis
+    var created time.Time
+    if err := row.Scan(&a.ID, &a.TenantID, &a.ScanID, &a.FileURL, &a.Result, &created); err != nil {
+        if err == sql.ErrNoRows {
+            return nil, nil
+        }
+        return nil, err
+    }
+    a.CreatedAt = created
+    return &a, nil
+}

@@ -164,8 +164,14 @@ WHERE tenant_id=?`
 				query += " AND status = ?"
 				args = append(args, value)
 			case "target":
-				query += " AND target LIKE ?"
-				args = append(args, "%"+value.(string)+"%")
+				// Use word boundary search
+				query += " AND (target LIKE ? OR target LIKE ? OR target LIKE ? OR target REGEXP ?)"
+				searchTerm := value.(string)
+				args = append(args,
+					"% "+searchTerm+" %", // word in middle
+					"% "+searchTerm,      // word at end
+					searchTerm+" %",      // word at start
+					fmt.Sprintf("[[.period.]]%s[[.period.]]|[[.slash.]]%s|%s[[.slash.]]", searchTerm, searchTerm, searchTerm)) // matches domain parts
 			case "branch":
 				query += " AND branch = ?"
 				args = append(args, value)
@@ -210,7 +216,7 @@ WHERE tenant_id=?`
 		Data:       scans,
 		Page:       page,
 		PageSize:   pageSize,
-		Total: total,
+		Total:      total,
 		TotalPages: int(math.Ceil(float64(total) / float64(pageSize))),
 	}, nil
 }
@@ -321,8 +327,14 @@ func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[s
 				query += " AND status = ?"
 				args = append(args, value)
 			case "target":
-				query += " AND target LIKE ?"
-				args = append(args, "%"+value.(string)+"%")
+				// Use word boundary search
+				query += " AND (target LIKE ? OR target LIKE ? OR target LIKE ? OR target REGEXP ?)"
+				searchTerm := value.(string)
+				args = append(args,
+					"% "+searchTerm+" %", // word in middle
+					"% "+searchTerm,      // word at end
+					searchTerm+" %",      // word at start
+					fmt.Sprintf("[[.period.]]%s[[.period.]]|[[.slash.]]%s|%s[[.slash.]]", searchTerm, searchTerm, searchTerm)) // matches domain parts
 			case "branch":
 				query += " AND branch = ?"
 				args = append(args, value)

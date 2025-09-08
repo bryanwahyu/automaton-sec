@@ -43,15 +43,6 @@ ON DUPLICATE KEY UPDATE
     return err
 }
 
-// stringOrDash returns "-" when the input is empty/whitespace
-func stringOrDash(s string) string {
-    if strings.TrimSpace(s) == "" {
-        return "-"
-    }
-    return s
-}
-
-
 // Paginate returns a page of analysis records ordered by created_at desc
 func (r *AnalystRepository) Paginate(ctx context.Context, tenant string, page, pageSize int) ([]*domain.Analysis, error) {
     if page <= 0 {

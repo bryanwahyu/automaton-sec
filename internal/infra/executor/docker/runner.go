@@ -66,8 +66,7 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			return domain.RunResult{}, fmt.Errorf("failed to get absolute path: %w", err)
 		}
 
-		// Use unique session and config settings to avoid conflicts
-		sessionId := fmt.Sprintf("scan-%d", time.Now().UnixNano())
+        // Use unique session and config settings to avoid conflicts
 
 		// Create session directory in the same directory as the artifact
 		sessionDir := filepath.Join(filepath.Dir(absArtifactPath), fmt.Sprintf("zap-session-%d", time.Now().UnixNano()))

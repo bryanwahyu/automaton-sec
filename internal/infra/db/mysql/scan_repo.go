@@ -3,7 +3,6 @@ package mysql
 import (
 	"context"
 	"database/sql"
-	"strings"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -51,13 +50,6 @@ ON DUPLICATE KEY UPDATE
 	return err
 }
 
-// stringOrDash returns "-" when the input is empty/whitespace
-func stringOrDash(s string) string {
-	if strings.TrimSpace(s) == "" {
-		return "-"
-	}
-	return s
-}
 
 // Get by ID + Tenant
 func (r *ScanRepository) Get(ctx context.Context, tenant string, id domain.ScanID) (*domain.Scan, error) {

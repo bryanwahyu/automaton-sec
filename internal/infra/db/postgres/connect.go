@@ -1,0 +1,27 @@
+package postgres
+
+import (
+    "context"
+    "database/sql"
+    _ "github.com/lib/pq"
+    "time"
+)
+
+// Connect opens a PostgreSQL connection using database/sql with lib/pq
+func Connect(ctx context.Context, dsn string) (*sql.DB, error) {
+    db, err := sql.Open("postgres", dsn)
+    if err != nil {
+        return nil, err
+    }
+    db.SetMaxOpenConns(25)
+    db.SetMaxIdleConns(10)
+    db.SetConnMaxLifetime(30 * time.Minute)
+
+    ctx2, cancel := context.WithTimeout(ctx, 5*time.Second)
+    defer cancel()
+    if err := db.PingContext(ctx2); err != nil {
+        return nil, err
+    }
+    return db, nil
+}
+

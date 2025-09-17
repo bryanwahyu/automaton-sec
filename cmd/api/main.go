@@ -1,12 +1,13 @@
 package main
 
 import (
-	"context"
-	"fmt"
-	"log"
-	"net/http"
-	"os"
-	"os/signal"
+    "context"
+    "database/sql"
+    "fmt"
+    "log"
+    "net/http"
+    "os"
+    "os/signal"
 	"syscall"
 	"time"
 
@@ -15,12 +16,16 @@ import (
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
-	"github.com/bryanwahyu/automaton-sec/internal/config"
-	openai "github.com/bryanwahyu/automaton-sec/internal/infra/ai/openai"
-	mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
-	dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
-	"github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
-	minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
+    "github.com/bryanwahyu/automaton-sec/internal/config"
+    analistdom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
+    scansdom "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+    serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
+    openai "github.com/bryanwahyu/automaton-sec/internal/infra/ai/openai"
+    mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
+    pgp "github.com/bryanwahyu/automaton-sec/internal/infra/db/postgres"
+    dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
+    "github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
+    minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
 )
 
 func main() {
@@ -38,17 +43,31 @@ func main() {
 
 	ctx := context.Background()
 
-	// connect MySQL
-	db, err := mysqlp.Connect(ctx, cfg.MySQLDSN())
-	if err != nil {
-		log.Fatalf("mysql connect error: %v", err)
+	// connect DB based on config.Database.Type (mysql|postgres)
+    var (
+        db          *sql.DB
+        repo        scansdom.Repository
+        analystRepo analistdom.Repository
+        scanErrRepo serrdom.Repository
+    )
+
+	switch cfg.Database.Type {
+	case "postgres", "postgresql", "pg":
+		var err error
+		db, err = pgp.Connect(ctx, cfg.PostgresDSN())
+		if err != nil { log.Fatalf("postgres connect error: %v", err) }
+		repo = pgp.NewScanRepository(db)
+		analystRepo = pgp.NewAnalystRepository(db)
+		scanErrRepo = pgp.NewScanErrorRepository(db)
+	default:
+		var err error
+		db, err = mysqlp.Connect(ctx, cfg.MySQLDSN())
+		if err != nil { log.Fatalf("mysql connect error: %v", err) }
+		repo = mysqlp.NewScanRepository(db)
+		analystRepo = mysqlp.NewAnalystRepository(db)
+		scanErrRepo = mysqlp.NewScanErrorRepository(db)
 	}
 	defer db.Close()
-
-    // init repos
-    repo := mysqlp.NewScanRepository(db)
-    analystRepo := mysqlp.NewAnalystRepository(db)
-    scanErrRepo := mysqlp.NewScanErrorRepository(db)
 
 	// init minio
 	store, err := minioStore.New(ctx,
@@ -70,7 +89,7 @@ func main() {
     aiClient := openai.NewClient(cfg.OpenAI.APIKey, cfg.OpenAI.Model)
 
 	// init services
-    aiSvc := appai.NewService(aiClient).WithRepos(analystRepo, repo)
+	aiSvc := appai.NewService(aiClient).WithRepos(analystRepo, repo)
 	scansSvc := &appscans.Service{
 		Repo:      repo,
 		Runner:    runner,

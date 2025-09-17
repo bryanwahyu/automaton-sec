@@ -8,17 +8,18 @@ import (
 )
 
 type Config struct {
-	Server struct {
-		Port int `yaml:"port"`
-	} `yaml:"server"`
+    Server struct {
+        Port int `yaml:"port"`
+    } `yaml:"server"`
 
-	Database struct {
-		Host     string `yaml:"host"`
-		Port     int    `yaml:"port"`
-		User     string `yaml:"user"`
-		Password string `yaml:"password"`
-		Name     string `yaml:"name"`
-	} `yaml:"database"`
+    Database struct {
+        Type     string `yaml:"type"`
+        Host     string `yaml:"host"`
+        Port     int    `yaml:"port"`
+        User     string `yaml:"user"`
+        Password string `yaml:"password"`
+        Name     string `yaml:"name"`
+    } `yaml:"database"`
 
 	Minio struct {
 		Endpoint   string `yaml:"endpoint"`
@@ -50,11 +51,27 @@ func Load(path string) (*Config, error) {
 
 // Helper untuk build DSN MySQL
 func (c *Config) MySQLDSN() string {
-	return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4&loc=UTC",
-		c.Database.User,
-		c.Database.Password,
-		c.Database.Host,
-		c.Database.Port,
-		c.Database.Name,
-	)
+    return fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?parseTime=true&charset=utf8mb4&loc=UTC",
+        c.Database.User,
+        c.Database.Password,
+        c.Database.Host,
+        c.Database.Port,
+        c.Database.Name,
+    )
+}
+
+// Helper to build DSN for PostgreSQL (lib/pq style)
+// Example: postgres://user:pass@host:5432/dbname?sslmode=disable
+func (c *Config) PostgresDSN() string {
+    sslmode := "disable"
+    // allow override via env if needed
+    if v := os.Getenv("PG_SSLMODE"); v != "" { sslmode = v }
+    return fmt.Sprintf("postgres://%s:%s@%s:%d/%s?sslmode=%s",
+        c.Database.User,
+        c.Database.Password,
+        c.Database.Host,
+        c.Database.Port,
+        c.Database.Name,
+        sslmode,
+    )
 }

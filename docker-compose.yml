@@ -13,3 +13,33 @@ services:
       - ./temp:/app/temp   # folder sementara untuk artifacts
       - ./temp/zap:/zap/wrk   # ZAP working directory
     user: root   # Temporarily run as root to ensure proper permissions
+  postgres:
+    image: postgres:15
+    container_name: security-postgres
+    environment:
+      POSTGRES_DB: security_db
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  security-api-pg:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: security-api-pg
+    environment:
+      CONFIG_PATH: /app/config.postgres.yaml
+      PG_SSLMODE: disable
+    ports:
+      - "5001:5000"
+    volumes:
+      - ./config.postgres.yaml:/app/config.postgres.yaml:ro
+      - ./temp:/app/temp
+      - ./temp/zap:/zap/wrk
+    depends_on:
+      - postgres
+    user: root
+volumes:
+  pgdata: {}

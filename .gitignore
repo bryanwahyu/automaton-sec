@@ -1,9 +1,7 @@
 .DS_Store
 config.yaml
 .env
-go.sum
 *.log
 *.sqlite
-*.db    
-
+*.db
 /vendor

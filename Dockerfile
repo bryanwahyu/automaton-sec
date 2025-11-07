@@ -4,8 +4,9 @@
 FROM golang:1.24-bullseye AS builder
 
 WORKDIR /app
-COPY go.mod ./
+COPY go.mod go.sum ./
 RUN go mod download
+RUN go mod tidy
 COPY . .
 RUN go build -o security-api ./cmd/api
 

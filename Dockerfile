@@ -6,7 +6,7 @@ FROM golang:1.24-bullseye AS builder
 WORKDIR /app
 COPY . .
 RUN go mod download
-RUN go build -o security-api ./cmd/api
+RUN go build ./cmd/api
 
 # ========================
 # Final Stage (FAT Image)

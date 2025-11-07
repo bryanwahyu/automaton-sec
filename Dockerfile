@@ -12,7 +12,7 @@ RUN go build -o security-api ./cmd/api
 # ========================
 # Final Stage (FAT Image)
 # ========================
-FROM openjdk:17-jdk-slim-bullseye
+FROM eclipse-temurin:17-jdk-jammy
 # Install dependencies
 RUN apt-get update --fix-missing \
     && apt-get install -y wget curl unzip git python3 python3-pip \

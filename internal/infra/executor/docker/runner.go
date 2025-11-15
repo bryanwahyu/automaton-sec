@@ -37,13 +37,15 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			"--batch", "--json", "-o", artifactPath,
 		)
 	case domain.ToolTrivy:
-		artifactPath += ".sarif"
-		rawFormat = "sarif"
+		artifactPath += ".json"
+		rawFormat = "json"
 		cmd = exec.CommandContext(ctx,
 			"trivy", "image",
-			"--scanners", "vuln",
-			"--severity", "HIGH,CRITICAL",
-			"--format", "sarif",
+			"--scanners", "vuln,secret,misconfig",
+			"--severity", "CRITICAL,HIGH,MEDIUM,LOW",
+			"--format", "json",
+			"--timeout", "15m",
+			"--quiet",
 			"-o", artifactPath,
 			req.Image,
 		)

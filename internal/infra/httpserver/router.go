@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/http"
 	"strconv"
 	"time"
@@ -19,22 +20,29 @@ import (
 	anldom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
 	serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
 type Router struct {
-	scansSvc *appscans.Service
-	aiSvc    *appai.Service
-	serrRepo serrdom.Repository
-	hmacKey  []byte
+	scansSvc     *appscans.Service
+	aiSvc        *appai.Service
+	serrRepo     serrdom.Repository
+	dbHealthChecker *middleware.DatabaseHealthChecker
+	hmacKey      []byte
 }
 
-func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, serrRepo serrdom.Repository, hmacKey []byte) http.Handler {
-	r := &Router{scansSvc: scansSvc, aiSvc: aiSvc, serrRepo: serrRepo, hmacKey: hmacKey}
+func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, serrRepo serrdom.Repository, dbHealthChecker *middleware.DatabaseHealthChecker, hmacKey []byte) http.Handler {
+	r := &Router{scansSvc: scansSvc, aiSvc: aiSvc, serrRepo: serrRepo, dbHealthChecker: dbHealthChecker, hmacKey: hmacKey}
 	mux := chi.NewRouter()
 
-	// Configure CORS middleware with all origins allowed (*)
+	// SECURITY FIX: Configure CORS with restricted origins
+	// NOTE: Update AllowedOrigins in production with your actual domains
 	mux.Use(cors.Handler(cors.Options{
-		AllowedOrigins: []string{"*"}, // Allow all origins
+		AllowedOrigins: []string{
+			"http://localhost:3000",
+			"http://localhost:8080",
+			"https://yourdomain.com", // Update this
+		},
 		AllowedMethods: []string{
 			"GET", "POST", "PUT", "DELETE", "OPTIONS",
 		},
@@ -45,13 +53,26 @@ func NewRouter(scansSvc *appscans.Service, aiSvc *appai.Service, serrRepo serrdo
 		ExposedHeaders: []string{
 			"Link", "Content-Length", "Content-Range",
 		},
-		AllowCredentials: false, // Must be false when AllowedOrigins is "*"
-		MaxAge:           300,   // Maximum value not ignored by any of major browsers
+		AllowCredentials: true,
+		MaxAge:           300,
 	}))
 
-	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
+	// Add logging and metrics middleware
+	mux.Use(middleware.LoggingMiddleware)
+	mux.Use(middleware.MetricsMiddleware)
+
+	// Health check endpoints (public, no auth)
+	mux.Get("/health", middleware.LivenessHandler)
+	mux.Get("/ready", middleware.ReadinessHandler)
+	mux.Get("/metrics", middleware.MetricsHandler)
+
+	// Detailed health check with database status
+	if r.dbHealthChecker != nil {
+		checkers := map[string]middleware.HealthChecker{
+			"database": r.dbHealthChecker,
+		}
+		mux.Get("/healthz", middleware.HealthHandler(checkers))
+	}
 
 	mux.Route("/v1/{tenant}", func(rt chi.Router) {
 		rt.Post("/webhook/security-scan", r.wrap(r.handleTriggerScan))
@@ -119,7 +140,7 @@ func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error
 
 	go func() {
 		if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, body.ScanID, queued.ID, scan.ArtifactURL); err != nil {
-			fmt.Printf("background ai analyze error tenant=%s scan_id=%s: %v\n", tenant, body.ScanID, err)
+			log.Printf("ERROR: AI analysis failed - tenant=%s scan_id=%s error=%v", tenant, body.ScanID, err)
 		}
 	}()
 
@@ -129,7 +150,7 @@ func (r *Router) handleAIAnalyze(w http.ResponseWriter, req *http.Request) error
 		"tenant":      tenant,
 		"scan_id":     body.ScanID,
 		"analysis_id": queued.ID,
-		"message":     "AI analysis started in background, tunggu sebentar ya",
+		"message":     "AI analysis started in background",
 		"queuedAt":    queued.CreatedAt,
 	}
 	w.Header().Set("Content-Type", "application/json")
@@ -176,7 +197,7 @@ func (r *Router) handleAIAnalyzeRetry(w http.ResponseWriter, req *http.Request) 
     // Start background work immediately (ignores scheduled backoff)
     go func(id anldom.AnalysisID) {
         if _, err := r.aiSvc.AnalyzeAndStoreWithID(context.Background(), tenant, scanID, id, scan.ArtifactURL); err != nil {
-            fmt.Printf("manual retry ai analyze error tenant=%s scan_id=%s: %v\n", tenant, scanID, err)
+            log.Printf("ERROR: AI analysis retry failed - tenant=%s scan_id=%s error=%v", tenant, scanID, err)
         }
     }(queuedID)
 
@@ -212,6 +233,11 @@ func (r *Router) handleAIAnalyzeList(w http.ResponseWriter, req *http.Request) e
 func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 
+	// SECURITY: Validate tenant ID
+	if err := middleware.ValidateTenantID(tenant); err != nil {
+		return fmt.Errorf("invalid tenant ID: %w", err)
+	}
+
 	var body struct {
 		Tool      string `json:"tool"`
 		Mode      string `json:"mode"`
@@ -224,8 +250,36 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 		Metadata  any    `json:"metadata"`
 	}
 	if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+		return fmt.Errorf("invalid JSON: %w", err)
+	}
+
+	// SECURITY: Validate all inputs to prevent injection attacks
+	if body.Tool == "" {
+		return fmt.Errorf("tool is required")
+	}
+	if err := middleware.ValidateTool(body.Tool); err != nil {
 		return err
 	}
+	if body.Target != "" {
+		if err := middleware.ValidateURL(body.Target); err != nil {
+			return err
+		}
+	}
+	if body.Image != "" {
+		if err := middleware.ValidateImageName(body.Image); err != nil {
+			return err
+		}
+	}
+	if body.Path != "" {
+		if err := middleware.ValidatePath(body.Path); err != nil {
+			return err
+		}
+	}
+
+	// Sanitize string inputs
+	body.Source = middleware.SanitizeString(body.Source)
+	body.CommitSHA = middleware.SanitizeString(body.CommitSHA)
+	body.Branch = middleware.SanitizeString(body.Branch)
 
 	cmd := appscans.TriggerScanCommand{
 		TenantID:  tenant,
@@ -240,17 +294,23 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 		Metadata:  body.Metadata,
 	}
 
-	// 🚀 Jalankan di background, biar jalan sampai selesai
+	// Track metrics
+	middleware.IncrementScans()
+
+	// Run scan in background to return response immediately
 	go func() {
-		// update status ke running
+		middleware.IncrementScansRunning()
+		defer middleware.DecrementScansRunning()
+
 		_ = r.scansSvc.UpdateStatus(cmd.TenantID, "running")
 
 		result, err := r.scansSvc.TriggerScanUntilDone(cmd)
 		if err != nil {
-			fmt.Printf("background scan error for tenant=%s tool=%s id=%s: %v\n",
+			log.Printf("ERROR: scan failed - tenant=%s tool=%s id=%s error=%v",
 				tenant, body.Tool, result.ID, err)
+			middleware.IncrementScansFailed()
 			_ = r.scansSvc.UpdateStatus(cmd.TenantID, "error")
-			// Simpan error ke tabel khusus supaya mudah dicek
+
 			if r.serrRepo != nil {
 				_ = r.serrRepo.Save(context.Background(), &serrdom.ScanError{
 					TenantID:    tenant,
@@ -264,13 +324,12 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 			return
 		}
 
-		// kalau berhasil → mark done
 		_ = r.scansSvc.MarkDone(cmd.TenantID, result)
-		fmt.Printf("scan finished: tenant=%s tool=%s artifact=%s\n",
+		log.Printf("INFO: scan completed - tenant=%s tool=%s artifact=%s",
 			tenant, body.Tool, result.ArtifactURL)
 	}()
 
-	// 🔙 langsung balikin respons ke client
+	// Return immediate response to client
 	resp := map[string]any{
 		"status":   "queued",
 		"tenant":   tenant,
@@ -459,17 +518,21 @@ func (r *Router) handleListScans(w http.ResponseWriter, req *http.Request) error
 }
 
 // POST /v1/{tenant}/scans/{id}/retry
-// Jalankan ulang scan yang sebelumnya error/failed. Dijalankan di background.
+// Retry a failed scan in the background
 func (r *Router) handleRetryScan(w http.ResponseWriter, req *http.Request) error {
 	tenant := chi.URLParam(req, "tenant")
 	id := chi.URLParam(req, "id")
 
-	// Jalankan di background supaya respons cepat
+	// Run retry in background for fast response
 	go func() {
+		middleware.IncrementScansRunning()
+		defer middleware.DecrementScansRunning()
+
 		_ = r.scansSvc.UpdateStatus(tenant, "running")
 		result, err := r.scansSvc.RetryScan(context.Background(), tenant, domain.ScanID(id))
 		if err != nil {
-			fmt.Printf("retry scan error tenant=%s id=%s: %v\n", tenant, id, err)
+			log.Printf("ERROR: scan retry failed - tenant=%s id=%s error=%v", tenant, id, err)
+			middleware.IncrementScansFailed()
 			_ = r.scansSvc.UpdateStatus(tenant, "error")
 			if r.serrRepo != nil {
 				_ = r.serrRepo.Save(context.Background(), &serrdom.ScanError{
@@ -483,7 +546,7 @@ func (r *Router) handleRetryScan(w http.ResponseWriter, req *http.Request) error
 			return
 		}
 		_ = r.scansSvc.MarkDone(tenant, result)
-		fmt.Printf("retry scan finished tenant=%s id=%s artifact=%s\n", tenant, id, result.ArtifactURL)
+		log.Printf("INFO: scan retry completed - tenant=%s id=%s artifact=%s", tenant, id, result.ArtifactURL)
 	}()
 
 	resp := map[string]any{

@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
 )
 
@@ -20,7 +21,33 @@ func NewRunner() *Runner {
 func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResult, error) {
 	start := time.Now()
 
-	// Pastikan temp dir ada
+	// Validate tool name to prevent command injection
+	if err := middleware.ValidateTool(string(req.Tool)); err != nil {
+		return domain.RunResult{}, fmt.Errorf("invalid tool: %w", err)
+	}
+
+	// Validate target URL if provided
+	if req.Target != "" {
+		if err := middleware.ValidateURL(req.Target); err != nil {
+			return domain.RunResult{}, fmt.Errorf("invalid target URL: %w", err)
+		}
+	}
+
+	// Validate image name if provided
+	if req.Image != "" {
+		if err := middleware.ValidateImageName(req.Image); err != nil {
+			return domain.RunResult{}, fmt.Errorf("invalid image name: %w", err)
+		}
+	}
+
+	// Validate path if provided
+	if req.Path != "" {
+		if err := middleware.ValidatePath(req.Path); err != nil {
+			return domain.RunResult{}, fmt.Errorf("invalid path: %w", err)
+		}
+	}
+
+	// Ensure temp dir exists
 	if err := os.MkdirAll("./temp", 0755); err != nil {
 		return domain.RunResult{}, fmt.Errorf("failed to create temp dir: %w", err)
 	}

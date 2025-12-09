@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -164,14 +165,12 @@ WHERE tenant_id=?`
 				query += " AND status = ?"
 				args = append(args, value)
 			case "target":
-				// Use word boundary search
-				query += " AND (target LIKE ? OR target LIKE ? OR target LIKE ? OR target REGEXP ?)"
+				// Use LIKE with wildcards - sanitize input to prevent SQL injection
+				query += " AND target LIKE ?"
 				searchTerm := value.(string)
-				args = append(args,
-					"% "+searchTerm+" %", // word in middle
-					"% "+searchTerm,      // word at end
-					searchTerm+" %",      // word at start
-					fmt.Sprintf("[[.period.]]%s[[.period.]]|[[.slash.]]%s|%s[[.slash.]]", searchTerm, searchTerm, searchTerm)) // matches domain parts
+				// Escape LIKE special characters
+				searchTerm = escapeLikePattern(searchTerm)
+				args = append(args, "%"+searchTerm+"%")
 			case "branch":
 				query += " AND branch = ?"
 				args = append(args, value)
@@ -327,14 +326,12 @@ func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[s
 				query += " AND status = ?"
 				args = append(args, value)
 			case "target":
-				// Use word boundary search
-				query += " AND (target LIKE ? OR target LIKE ? OR target LIKE ? OR target REGEXP ?)"
+				// Use LIKE with wildcards - sanitize input to prevent SQL injection
+				query += " AND target LIKE ?"
 				searchTerm := value.(string)
-				args = append(args,
-					"% "+searchTerm+" %", // word in middle
-					"% "+searchTerm,      // word at end
-					searchTerm+" %",      // word at start
-					fmt.Sprintf("[[.period.]]%s[[.period.]]|[[.slash.]]%s|%s[[.slash.]]", searchTerm, searchTerm, searchTerm)) // matches domain parts
+				// Escape LIKE special characters
+				searchTerm = escapeLikePattern(searchTerm)
+				args = append(args, "%"+searchTerm+"%")
 			case "branch":
 				query += " AND branch = ?"
 				args = append(args, value)
@@ -349,4 +346,13 @@ func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[s
 	}
 
 	return count, nil
+}
+
+// escapeLikePattern escapes special characters in LIKE patterns to prevent SQL injection
+func escapeLikePattern(s string) string {
+	// Escape backslash first, then other LIKE special characters
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
 }

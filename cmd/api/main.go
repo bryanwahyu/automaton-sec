@@ -11,8 +11,6 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/go-chi/chi/v5"
-
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
@@ -25,6 +23,7 @@ import (
     pgp "github.com/bryanwahyu/automaton-sec/internal/infra/db/postgres"
     dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
     "github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
+    "github.com/bryanwahyu/automaton-sec/internal/middleware"
     minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
 )
 
@@ -69,6 +68,18 @@ func main() {
 	}
 	defer db.Close()
 
+	// Configure database connection pooling for optimal performance
+	db.SetMaxOpenConns(25)                 // Maximum number of open connections
+	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
+	db.SetConnMaxLifetime(5 * time.Minute) // Maximum lifetime of a connection
+	db.SetConnMaxIdleTime(2 * time.Minute) // Maximum idle time of a connection
+
+	// Verify database connection
+	if err := db.PingContext(ctx); err != nil {
+		log.Fatalf("database ping failed: %v", err)
+	}
+	log.Println("database connection established successfully")
+
 	// init minio
 	store, err := minioStore.New(ctx,
 		cfg.Minio.Endpoint,
@@ -97,17 +108,19 @@ func main() {
 		Clock:     application.SystemClock{},
 	}
 
+	// init database health checker
+	dbHealthChecker := &middleware.DatabaseHealthChecker{DB: db}
+
 	// init router
-    mux := chi.NewRouter()
-    mux.Mount("/", httpserver.NewRouter(scansSvc, aiSvc, scanErrRepo, nil))
+    router := httpserver.NewRouter(scansSvc, aiSvc, scanErrRepo, dbHealthChecker, nil)
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      mux,
-		ReadTimeout:  15 * time.Second,
-		WriteTimeout: 15 * time.Second,
-		IdleTimeout:  60 * time.Second,
+		Handler:      router,
+		ReadTimeout:  30 * time.Second,  // Increased for long-running scans
+		WriteTimeout: 30 * time.Second,  // Increased for large responses
+		IdleTimeout:  120 * time.Second, // Increased for keep-alive
 	}
 
 	// run server

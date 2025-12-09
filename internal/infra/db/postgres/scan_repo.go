@@ -5,7 +5,7 @@ import (
     "database/sql"
     "fmt"
     "math"
-    "regexp"
+    "strings"
     "time"
 
     domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -150,18 +150,13 @@ WHERE tenant_id=$1`
                 args = append(args, value)
                 next++
             case "target":
-                // Use LIKE and a regex on separators (., /)
-                // Build patterns in Go and pass as params
+                // Use LIKE with wildcards - sanitize input to prevent SQL injection
                 term := value.(string)
-                likeMiddle := "% " + term + " %"
-                likeEnd := "% " + term
-                likeStart := term + " %"
-                // regex: (^|\.|/)term($|\.|/)
-                escaped := regexp.QuoteMeta(term)
-                regex := fmt.Sprintf("(^|\\.|/)%s($|\\.|/)", escaped)
-                query += fmt.Sprintf(" AND (target LIKE $%d OR target LIKE $%d OR target LIKE $%d OR target ~ $%d)", next, next+1, next+2, next+3)
-                args = append(args, likeMiddle, likeEnd, likeStart, regex)
-                next += 4
+                // Escape LIKE special characters
+                term = escapeLikePattern(term)
+                query += fmt.Sprintf(" AND target LIKE $%d", next)
+                args = append(args, "%"+term+"%")
+                next++
             case "branch":
                 query += fmt.Sprintf(" AND branch = $%d", next)
                 args = append(args, value)
@@ -316,17 +311,13 @@ func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[s
                 args = append(args, value)
                 next++
             case "target":
+                // Use LIKE with wildcards - sanitize input to prevent SQL injection
                 term := value.(string)
-                likeMiddle := "% " + term + " %"
-                likeEnd := "% " + term
-                likeStart := term + " %"
-                escaped := regexp.QuoteMeta(term)
-                regex := fmt.Sprintf("(^|\\.|/)\n%s($|\\.|/)", escaped)
-                // Note: the newline in the format above is not intended; correct it below
-                regex = fmt.Sprintf("(^|\\.|/)%s($|\\.|/)", escaped)
-                query += fmt.Sprintf(" AND (target LIKE $%d OR target LIKE $%d OR target LIKE $%d OR target ~ $%d)", next, next+1, next+2, next+3)
-                args = append(args, likeMiddle, likeEnd, likeStart, regex)
-                next += 4
+                // Escape LIKE special characters
+                term = escapeLikePattern(term)
+                query += fmt.Sprintf(" AND target LIKE $%d", next)
+                args = append(args, "%"+term+"%")
+                next++
             case "branch":
                 query += fmt.Sprintf(" AND branch = $%d", next)
                 args = append(args, value)
@@ -342,3 +333,11 @@ func (r *ScanRepository) Count(ctx context.Context, tenant string, filters map[s
     return count, nil
 }
 
+// escapeLikePattern escapes special characters in LIKE patterns to prevent SQL injection
+func escapeLikePattern(s string) string {
+	// Escape backslash first, then other LIKE special characters
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "%", "\\%")
+	s = strings.ReplaceAll(s, "_", "\\_")
+	return s
+}

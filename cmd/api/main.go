@@ -26,6 +26,7 @@ import (
 	dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
 	"github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
 	minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
+	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
 func main() {
@@ -76,6 +77,13 @@ func main() {
 		scanErrRepo = mysqlp.NewScanErrorRepository(db)
 	}
 	defer db.Close()
+
+	// Connection pool limits: without them a burst of concurrent scans can
+	// open an unbounded number of connections.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 
 	// init minio
 	store, err := minioStore.New(ctx,
@@ -133,7 +141,10 @@ func main() {
 			WebhookHMACKey: []byte(cfg.Auth.WebhookHMACKey),
 			APIKeys:        cfg.Auth.APIKeys,
 		},
-		CORSOrigins: cfg.CORS.AllowedOrigins,
+		CORSOrigins:        cfg.CORS.AllowedOrigins,
+		DBHealth:           &middleware.DatabaseHealthChecker{DB: db},
+		RateLimitBurst:     cfg.RateLimit.Burst,
+		RateLimitPerMinute: cfg.RateLimit.PerMinute,
 	}))
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)

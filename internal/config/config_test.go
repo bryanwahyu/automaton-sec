@@ -26,8 +26,17 @@ auth:
 		t.Fatalf("Load: %v", err)
 	}
 
-	if cfg.Server.Port != 8000 {
-		t.Errorf("port = %d, want 8000", cfg.Server.Port)
+	if cfg.Server.Port != 5000 {
+		t.Errorf("port = %d, want 5000", cfg.Server.Port)
+	}
+	if cfg.Database.Host != "localhost" {
+		t.Errorf("db host = %q, want localhost", cfg.Database.Host)
+	}
+	if cfg.Database.Port != 3306 {
+		t.Errorf("db port = %d, want 3306 for mysql", cfg.Database.Port)
+	}
+	if cfg.RateLimit.Burst != 20 || cfg.RateLimit.PerMinute != 60 {
+		t.Errorf("rate limit = %d/%d, want 20/60", cfg.RateLimit.Burst, cfg.RateLimit.PerMinute)
 	}
 	if cfg.Scanner.MaxConcurrent != 2 {
 		t.Errorf("maxConcurrent = %d, want 2", cfg.Scanner.MaxConcurrent)
@@ -118,5 +127,63 @@ func TestDSNs(t *testing.T) {
 	t.Setenv("PG_SSLMODE", "require")
 	if got := cfg.PostgresDSN(); got != "postgres://app:pw@db.internal:3306/security_db?sslmode=require" {
 		t.Errorf("PostgresDSN() = %q", got)
+	}
+}
+
+func TestEnvironmentOverridesTheFile(t *testing.T) {
+	path := write(t, `
+server:
+  port: 5000
+database:
+  type: mysql
+  host: file-host
+auth:
+  apiKeys: ["from-file"]
+`)
+
+	t.Setenv("SERVER_PORT", "9999")
+	t.Setenv("DB_HOST", "env-host")
+	t.Setenv("AUTH_API_KEYS", "k1, k2 ,")
+	t.Setenv("SCANNER_ALLOW_PRIVATE_TARGETS", "true")
+	t.Setenv("SCANNER_TIMEOUT", "5m")
+	t.Setenv("CORS_ALLOWED_ORIGINS", "https://a.test,https://b.test")
+
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if cfg.Server.Port != 9999 {
+		t.Errorf("port = %d, want the env value 9999", cfg.Server.Port)
+	}
+	if cfg.Database.Host != "env-host" {
+		t.Errorf("db host = %q, want env-host", cfg.Database.Host)
+	}
+	if len(cfg.Auth.APIKeys) != 2 || cfg.Auth.APIKeys[0] != "k1" || cfg.Auth.APIKeys[1] != "k2" {
+		t.Errorf("api keys = %v, want [k1 k2]", cfg.Auth.APIKeys)
+	}
+	if !cfg.Scanner.AllowPrivateTargets {
+		t.Error("SCANNER_ALLOW_PRIVATE_TARGETS should have been applied")
+	}
+	if cfg.Scanner.Timeout.Duration() != 5*time.Minute {
+		t.Errorf("scanner timeout = %s, want 5m", cfg.Scanner.Timeout.Duration())
+	}
+	if len(cfg.CORS.AllowedOrigins) != 2 {
+		t.Errorf("cors origins = %v, want two entries", cfg.CORS.AllowedOrigins)
+	}
+}
+
+func TestEnvAloneIsEnoughWithoutAConfigFile(t *testing.T) {
+	// A missing file is fine when the environment supplies the settings, so
+	// secrets never have to be written to disk.
+	t.Setenv("AUTH_API_KEYS", "k1")
+	t.Setenv("DB_TYPE", "postgres")
+
+	cfg, err := Load(filepath.Join(t.TempDir(), "absent.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Database.Port != 5432 {
+		t.Errorf("db port = %d, want the postgres default 5432", cfg.Database.Port)
 	}
 }

@@ -25,6 +25,9 @@ auth:
   disabled: true
 cors:
   allowedOrigins: []
+rateLimit:
+  burst: 20
+  perMinute: 60
 scanner:
   maxConcurrent: 2
   timeout: 30m

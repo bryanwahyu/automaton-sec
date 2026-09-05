@@ -21,6 +21,7 @@ import (
 	anldom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
 	serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
 // Deps is everything the router needs. It is a struct rather than a parameter
@@ -39,6 +40,11 @@ type Deps struct {
 	// CORSOrigins is the allowlist sent to browsers. Empty means no
 	// cross-origin access.
 	CORSOrigins []string
+	// DBHealth backs GET /healthz. Nil omits that endpoint.
+	DBHealth *middleware.DatabaseHealthChecker
+	// RateLimitBurst and RateLimitPerMinute bound requests per tenant+IP.
+	RateLimitBurst     int
+	RateLimitPerMinute int
 }
 
 type Router struct {
@@ -79,12 +85,38 @@ func NewRouter(deps Deps) http.Handler {
 		MaxAge:           300, // Maximum value not ignored by any of major browsers
 	}))
 
-	// Unauthenticated on purpose: liveness probes must not need a credential.
-	mux.Get("/health", func(w http.ResponseWriter, r *http.Request) {
-		w.Write([]byte("ok"))
-	})
+	mux.Use(middleware.LoggingMiddleware)
+	mux.Use(middleware.MetricsMiddleware)
+
+	// Unauthenticated on purpose: probes and scrapers must not need a
+	// credential, and none of these expose scan data.
+	mux.Get("/health", middleware.LivenessHandler)
+	mux.Get("/ready", middleware.ReadinessHandler)
+	mux.Get("/metrics", middleware.MetricsHandler)
+	if deps.DBHealth != nil {
+		mux.Get("/healthz", middleware.HealthHandler(map[string]middleware.HealthChecker{
+			"database": deps.DBHealth,
+		}))
+	}
+
+	// Tokens refill per second; the config expresses the sustained rate per
+	// minute because that is the easier number to reason about.
+	//
+	// Both values are clamped: a zero burst would build a bucket that can never
+	// hand out a token, turning the limiter into a blanket 429.
+	burst := deps.RateLimitBurst
+	if burst < 1 {
+		burst = 20
+	}
+	refillPerSecond := deps.RateLimitPerMinute / 60
+	if refillPerSecond < 1 {
+		refillPerSecond = 1
+	}
 
 	mux.Route("/v1/{tenant}", func(rt chi.Router) {
+		rt.Use(middleware.RateLimitMiddleware(burst, refillPerSecond))
+		rt.Use(requireValidTenant)
+
 		// Triggering a scan is signed with the webhook secret.
 		rt.Group(func(sec chi.Router) {
 			sec.Use(deps.Auth.requireWebhookSignature)
@@ -107,6 +139,18 @@ func NewRouter(deps Deps) http.Handler {
 	})
 
 	return mux
+}
+
+// requireValidTenant rejects a malformed tenant segment before it reaches a
+// handler, a query, or an artifact storage key.
+func requireValidTenant(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		if err := middleware.ValidateTenantID(chi.URLParam(req, "tenant")); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		next.ServeHTTP(w, req)
+	})
 }
 
 // badRequest marks an error as caller error so wrap answers 400 instead of 500.

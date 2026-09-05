@@ -20,7 +20,8 @@ A comprehensive Go-based security scanning platform with multiple security tools
 - MySQL or PostgreSQL for scan results
 - MinIO/S3 object storage for artifacts
 - Docker containerized deployment
-- Configurable CORS allowlist
+- Configurable CORS allowlist and per-tenant rate limiting
+- Liveness, readiness, detailed health, and metrics endpoints
 - Scan failures recorded per scan and readable over the API
 
 ## 📋 Requirements
@@ -44,6 +45,7 @@ security-api/
 │   │   ├── ai/          # AI domain models
 │   │   ├── analyst/     # Analyst domain
 │   │   └── scans/       # Scan domain models
+│   ├── middleware/      # Logging, metrics, health, rate limiting, validators
 │   ├── infra/           # Infrastructure layer
 │   │   ├── ai/          # OpenAI client
 │   │   ├── db/          # Database repositories
@@ -102,9 +104,15 @@ go run cmd/api/main.go
 Copy `config.yaml.example` to `config.yaml` and fill it in. `config.yaml` is
 gitignored. Point somewhere else with `CONFIG_PATH=/path/to/config.yaml`.
 
+Every setting can also come from the environment, which takes precedence over
+the file, so secrets need not be written to disk — `AUTH_API_KEYS`,
+`DB_PASSWORD`, `OPENAI_API_KEY`, and the rest are listed at the top of
+`config.yaml.example`. A missing config file is fine when the environment
+supplies enough.
+
 ```yaml
 server:
-  port: 8000
+  port: 5000
   shutdownGrace: 30s      # how long to wait for in-flight scans on SIGTERM
 
 database:
@@ -136,6 +144,10 @@ auth:
 cors:
   allowedOrigins: []      # e.g. ["https://dashboard.example.com"]
 
+rateLimit:
+  burst: 20               # token bucket capacity per tenant+IP
+  perMinute: 60           # sustained refill rate
+
 scanner:
   maxConcurrent: 2        # simultaneous scanner processes
   timeout: 30m            # ceiling on a single scan
@@ -155,7 +167,11 @@ Every route except `GET /health` requires a credential.
 | --- | --- |
 | `POST /v1/{tenant}/webhook/security-scan` | `X-Signature: <hex HMAC-SHA256 of the raw body>`, keyed with `auth.webhookHmacKey` |
 | Everything else under `/v1/{tenant}` | `Authorization: Bearer <key>` from `auth.apiKeys` |
-| `GET /health` | none |
+| `GET /health`, `/ready`, `/metrics`, `/healthz` | none |
+
+All `/v1` routes are additionally rate limited per tenant+IP (`rateLimit.burst`,
+`rateLimit.perMinute`); probe and metrics endpoints are exempt. A malformed
+tenant segment is rejected with `400` before any handler runs.
 
 If `auth.webhookHmacKey` is unset, the webhook route falls back to bearer
 authentication rather than opening up.
@@ -180,6 +196,9 @@ and scans are only ever read back under the tenant that created them.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Liveness probe. No credential. |
+| `GET` | `/ready` | Readiness probe. No credential. |
+| `GET` | `/metrics` | Request, scan, error, memory, and goroutine counters. No credential. |
+| `GET` | `/healthz` | Detailed health including database connectivity. No credential. |
 | `POST` | `/v1/{tenant}/webhook/security-scan` | Queue a scan |
 | `POST` | `/v1/{tenant}/scans/{id}/retry` | Re-run a scan |
 | `GET` | `/v1/{tenant}/scans` | Paginated list |
@@ -230,7 +249,7 @@ Scans run in the background, so the response is immediate:
 | `202 Accepted` | Queued. Poll `GET /v1/{tenant}/scans` for the result. |
 | `400 Bad Request` | Malformed body, unknown tool, or a target the policy rejects |
 | `401 Unauthorized` | Missing or wrong signature |
-| `429 Too Many Requests` | `scanner.maxConcurrent` reached; a `Retry-After` header is sent |
+| `429 Too Many Requests` | Rate limit hit, or `scanner.maxConcurrent` reached; a `Retry-After` header is sent |
 
 ### List scans (offset pagination)
 

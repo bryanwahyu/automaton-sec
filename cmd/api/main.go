@@ -1,30 +1,32 @@
 package main
 
 import (
-    "context"
-    "database/sql"
-    "fmt"
-    "log"
-    "net/http"
-    "os"
-    "os/signal"
+	"context"
+	"database/sql"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
 	"syscall"
 	"time"
+
+	"github.com/go-chi/chi/v5"
 
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
-    "github.com/bryanwahyu/automaton-sec/internal/config"
-    analistdom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
-    scansdom "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
-    serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
-    openai "github.com/bryanwahyu/automaton-sec/internal/infra/ai/openai"
-    mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
-    pgp "github.com/bryanwahyu/automaton-sec/internal/infra/db/postgres"
-    dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
-    "github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
-    "github.com/bryanwahyu/automaton-sec/internal/middleware"
-    minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
+	"github.com/bryanwahyu/automaton-sec/internal/config"
+	analistdom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
+	serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
+	scansdom "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+	openai "github.com/bryanwahyu/automaton-sec/internal/infra/ai/openai"
+	mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
+	pgp "github.com/bryanwahyu/automaton-sec/internal/infra/db/postgres"
+	dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
+	"github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
+	minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
+	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
 func main() {
@@ -39,46 +41,49 @@ func main() {
 	if err != nil {
 		log.Fatalf("config load error: %v", err)
 	}
+	if cfg.Auth.Disabled {
+		log.Printf("WARNING: auth.disabled is true — every endpoint is open. " +
+			"Do not run this way outside local development.")
+	}
 
 	ctx := context.Background()
 
 	// connect DB based on config.Database.Type (mysql|postgres)
-    var (
-        db          *sql.DB
-        repo        scansdom.Repository
-        analystRepo analistdom.Repository
-        scanErrRepo serrdom.Repository
-    )
+	var (
+		db          *sql.DB
+		repo        scansdom.Repository
+		analystRepo analistdom.Repository
+		scanErrRepo serrdom.Repository
+	)
 
 	switch cfg.Database.Type {
 	case "postgres", "postgresql", "pg":
 		var err error
 		db, err = pgp.Connect(ctx, cfg.PostgresDSN())
-		if err != nil { log.Fatalf("postgres connect error: %v", err) }
+		if err != nil {
+			log.Fatalf("postgres connect error: %v", err)
+		}
 		repo = pgp.NewScanRepository(db)
 		analystRepo = pgp.NewAnalystRepository(db)
 		scanErrRepo = pgp.NewScanErrorRepository(db)
 	default:
 		var err error
 		db, err = mysqlp.Connect(ctx, cfg.MySQLDSN())
-		if err != nil { log.Fatalf("mysql connect error: %v", err) }
+		if err != nil {
+			log.Fatalf("mysql connect error: %v", err)
+		}
 		repo = mysqlp.NewScanRepository(db)
 		analystRepo = mysqlp.NewAnalystRepository(db)
 		scanErrRepo = mysqlp.NewScanErrorRepository(db)
 	}
 	defer db.Close()
 
-	// Configure database connection pooling for optimal performance
-	db.SetMaxOpenConns(25)                 // Maximum number of open connections
-	db.SetMaxIdleConns(5)                  // Maximum number of idle connections
-	db.SetConnMaxLifetime(5 * time.Minute) // Maximum lifetime of a connection
-	db.SetConnMaxIdleTime(2 * time.Minute) // Maximum idle time of a connection
-
-	// Verify database connection
-	if err := db.PingContext(ctx); err != nil {
-		log.Fatalf("database ping failed: %v", err)
-	}
-	log.Println("database connection established successfully")
+	// Connection pool limits: without them a burst of concurrent scans can
+	// open an unbounded number of connections.
+	db.SetMaxOpenConns(25)
+	db.SetMaxIdleConns(5)
+	db.SetConnMaxLifetime(5 * time.Minute)
+	db.SetConnMaxIdleTime(2 * time.Minute)
 
 	// init minio
 	store, err := minioStore.New(ctx,
@@ -93,11 +98,22 @@ func main() {
 		log.Fatalf("minio init error: %v", err)
 	}
 
+	// The policy gates every value that reaches a scanner's command line.
+	policy := scansdom.TargetPolicy{
+		AllowPrivateTargets: cfg.Scanner.AllowPrivateTargets,
+		AllowedHosts:        cfg.Scanner.AllowedHosts,
+		WorkspaceRoot:       cfg.Scanner.WorkspaceRoot,
+	}
+	if policy.AllowPrivateTargets {
+		log.Printf("WARNING: scanner.allowPrivateTargets is true — the API will scan " +
+			"loopback, link-local and private addresses on request.")
+	}
+
 	// init runner
-	runner := dockerrunner.NewRunner()
+	runner := dockerrunner.NewRunner(policy)
 
 	// init open ai client
-    aiClient := openai.NewClient(cfg.OpenAI.APIKey, cfg.OpenAI.Model)
+	aiClient := openai.NewClient(cfg.OpenAI.APIKey, cfg.OpenAI.Model)
 
 	// init services
 	aiSvc := appai.NewService(aiClient).WithRepos(analystRepo, repo)
@@ -108,19 +124,36 @@ func main() {
 		Clock:     application.SystemClock{},
 	}
 
-	// init database health checker
-	dbHealthChecker := &middleware.DatabaseHealthChecker{DB: db}
+	// Bound how many scanners run at once and how long each may take.
+	pool := application.NewPool(cfg.Scanner.MaxConcurrent, cfg.Scanner.Timeout.Duration())
+	log.Printf("scanner pool: max_concurrent=%d timeout=%s", pool.Capacity(), cfg.Scanner.Timeout.Duration())
 
 	// init router
-    router := httpserver.NewRouter(scansSvc, aiSvc, scanErrRepo, dbHealthChecker, nil)
+	mux := chi.NewRouter()
+	mux.Mount("/", httpserver.NewRouter(httpserver.Deps{
+		ScansSvc: scansSvc,
+		AISvc:    aiSvc,
+		ScanErrs: scanErrRepo,
+		Pool:     pool,
+		Policy:   policy,
+		Auth: httpserver.AuthConfig{
+			Disabled:       cfg.Auth.Disabled,
+			WebhookHMACKey: []byte(cfg.Auth.WebhookHMACKey),
+			APIKeys:        cfg.Auth.APIKeys,
+		},
+		CORSOrigins:        cfg.CORS.AllowedOrigins,
+		DBHealth:           &middleware.DatabaseHealthChecker{DB: db},
+		RateLimitBurst:     cfg.RateLimit.Burst,
+		RateLimitPerMinute: cfg.RateLimit.PerMinute,
+	}))
 
 	addr := fmt.Sprintf(":%d", cfg.Server.Port)
 	srv := &http.Server{
 		Addr:         addr,
-		Handler:      router,
-		ReadTimeout:  30 * time.Second,  // Increased for long-running scans
-		WriteTimeout: 30 * time.Second,  // Increased for large responses
-		IdleTimeout:  120 * time.Second, // Increased for keep-alive
+		Handler:      mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
+		IdleTimeout:  60 * time.Second,
 	}
 
 	// run server
@@ -137,9 +170,22 @@ func main() {
 	<-stop
 	log.Println("shutting down server...")
 
-	ctx2, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	grace := cfg.Server.ShutdownGrace.Duration()
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), grace)
 	defer cancel()
-	if err := srv.Shutdown(ctx2); err != nil {
-		log.Printf("shutdown error: %v", err)
+
+	if err := srv.Shutdown(shutdownCtx); err != nil {
+		log.Printf("http shutdown error: %v", err)
 	}
+
+	// srv.Shutdown only drains HTTP handlers; scans run detached from the
+	// request that started them, so wait for the pool too.
+	if n := pool.InFlight(); n > 0 {
+		log.Printf("waiting up to %s for %d in-flight scan(s)...", grace, n)
+	}
+	if err := pool.Wait(shutdownCtx); err != nil {
+		log.Printf("shutdown grace expired with %d scan(s) still running; "+
+			"their rows stay at status=running and can be retried", pool.InFlight())
+	}
+	log.Println("shutdown complete")
 }

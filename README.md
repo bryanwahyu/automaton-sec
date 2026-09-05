@@ -427,7 +427,6 @@ files carry the `ALTER TABLE` statements at the top of the scans section.
   "triggered_at": "2026-09-05T10:00:00Z",
   "tool": "trivy",
   "image": "nginx:latest",
-  "path": "",
   "status": "success",
   "counts": {
     "critical": 5,

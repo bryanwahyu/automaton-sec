@@ -35,11 +35,10 @@ func (t Tool) Valid() bool {
 type Status string
 
 const (
-	StatusRunning     Status = "running"
-	StatusSuccess     Status = "success"
-	StatusFailed      Status = "failed"
-	StatusError       Status = "error"
-	StatusInterrupted Status = "interrupted"
+	StatusRunning Status = "running"
+	StatusSuccess Status = "success"
+	StatusFailed  Status = "failed"
+	StatusError   Status = "error"
 )
 
 // SeverityCounts value object

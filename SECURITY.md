@@ -216,7 +216,9 @@ go list -json -m all | nancy sleuth
 
 ### 📞 **Reporting Security Issues**
 
-If you discover a security vulnerability, please email **security@yourdomain.com** (replace with actual email).
+If you discover a security vulnerability in this project, report it privately
+through [GitHub Security Advisories](https://github.com/bryanwahyu/automaton-sec/security/advisories/new).
+That keeps the report visible only to the maintainers until a fix is out.
 
 **Please do not**:
 - Open public GitHub issues for security vulnerabilities

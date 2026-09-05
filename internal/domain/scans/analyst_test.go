@@ -91,3 +91,137 @@ func TestParseZAPHTMLFallsBackToClassMarkup(t *testing.T) {
 		t.Fatalf("counts = %+v, want %+v", got, want)
 	}
 }
+
+func TestParseSemgrepJSON(t *testing.T) {
+	// The first result carries a triaged metadata rating, which wins over the
+	// rule level; the rest fall back to ERROR/WARNING/INFO.
+	const report = `{"results":[
+	  {"extra":{"severity":"WARNING","metadata":{"severity":"CRITICAL"}}},
+	  {"extra":{"severity":"ERROR","metadata":{}}},
+	  {"extra":{"severity":"WARNING","metadata":{}}},
+	  {"extra":{"severity":"INFO","metadata":{}}}
+	],"errors":[]}`
+
+	got, err := ParseSeverityCounts(ToolSemgrep, writeTemp(t, "s.json", report))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+
+	want := SeverityCounts{Critical: 1, High: 1, Medium: 1, Low: 1, Total: 4}
+	if got != want {
+		t.Fatalf("counts = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseSemgrepJSONEmptyRun(t *testing.T) {
+	got, err := ParseSeverityCounts(ToolSemgrep, writeTemp(t, "s.json", `{"results":[],"errors":[]}`))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+	if got != (SeverityCounts{}) {
+		t.Fatalf("counts = %+v, want zero", got)
+	}
+}
+
+func TestParseOSVScannerJSONCountsGroupsNotAliases(t *testing.T) {
+	// GO-1 and GHSA-1 are the same vulnerability under two identifiers, so the
+	// group is one finding, not two. Severity comes from the CVSS band.
+	const report = `{"results":[
+	  {"packages":[
+	    {"vulnerabilities":[
+	      {"id":"GO-1","database_specific":{}},
+	      {"id":"GHSA-1","database_specific":{"severity":"CRITICAL"}},
+	      {"id":"GHSA-2","database_specific":{"severity":"MODERATE"}}
+	    ],
+	     "groups":[
+	      {"ids":["GO-1","GHSA-1"],"max_severity":"9.8"},
+	      {"ids":["GHSA-2"],"max_severity":"5.3"}
+	    ]}
+	  ]}
+	]}`
+
+	got, err := ParseSeverityCounts(ToolOSVScanner, writeTemp(t, "o.json", report))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+
+	want := SeverityCounts{Critical: 1, Medium: 1, Total: 2}
+	if got != want {
+		t.Fatalf("counts = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseOSVScannerJSONSeverityFallbacks(t *testing.T) {
+	// Go advisories routinely carry neither a CVSS score nor a GitHub rating.
+	// Where a score is missing the worst member rating is used; where both are
+	// missing the finding still has to land in a bucket.
+	const report = `{"results":[
+	  {"packages":[
+	    {"vulnerabilities":[
+	      {"id":"GO-2","database_specific":{}},
+	      {"id":"GHSA-3","database_specific":{"severity":"HIGH"}},
+	      {"id":"GO-4","database_specific":{}}
+	    ],
+	     "groups":[
+	      {"ids":["GO-2","GHSA-3"],"max_severity":""},
+	      {"ids":["GO-4"],"max_severity":""}
+	    ]}
+	  ]}
+	]}`
+
+	got, err := ParseSeverityCounts(ToolOSVScanner, writeTemp(t, "o.json", report))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+
+	want := SeverityCounts{High: 1, Low: 1, Total: 2}
+	if got != want {
+		t.Fatalf("counts = %+v, want %+v", got, want)
+	}
+	if got.Critical+got.High+got.Medium+got.Low != got.Total {
+		t.Fatal("severity buckets should sum to Total")
+	}
+}
+
+func TestParseOSVScannerJSONWithoutGroups(t *testing.T) {
+	// Output that omits groups falls back to one finding per vulnerability.
+	const report = `{"results":[{"packages":[{"vulnerabilities":[
+	  {"id":"GHSA-9","database_specific":{"severity":"MODERATE"}}
+	]}]}]}`
+
+	got, err := ParseSeverityCounts(ToolOSVScanner, writeTemp(t, "o.json", report))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+	if (got != SeverityCounts{Medium: 1, Total: 1}) {
+		t.Fatalf("counts = %+v, want 1 medium", got)
+	}
+}
+
+func TestParseOSVScannerJSONAgainstRealOutput(t *testing.T) {
+	// Fixture captured from osv-scanner v1.9.2 scanning this repository.
+	path := "testdata/osv-scanner.json"
+	if _, err := os.Stat(path); err != nil {
+		t.Skip("fixture not present")
+	}
+	got, err := ParseSeverityCounts(ToolOSVScanner, path)
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+	if got.Total == 0 {
+		t.Fatal("the fixture contains findings; got none")
+	}
+	if got.Critical+got.High+got.Medium+got.Low != got.Total {
+		t.Fatalf("buckets %+v do not sum to Total", got)
+	}
+}
+
+func TestParseOSVScannerJSONNoVulnerabilities(t *testing.T) {
+	got, err := ParseSeverityCounts(ToolOSVScanner, writeTemp(t, "o.json", `{"results":[]}`))
+	if err != nil {
+		t.Fatalf("ParseSeverityCounts: %v", err)
+	}
+	if got.Total != 0 {
+		t.Fatalf("Total = %d, want 0", got.Total)
+	}
+}

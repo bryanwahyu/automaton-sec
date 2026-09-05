@@ -38,12 +38,14 @@ func (p TargetPolicy) ValidateRunRequest(req RunRequest) error {
 		return fmt.Errorf("unsupported tool: %q", req.Tool)
 	}
 
+	if req.Tool.ScansFilesystem() {
+		_, err := p.ValidatePath(req.Path)
+		return err
+	}
+
 	switch req.Tool {
 	case ToolTrivy:
 		return p.ValidateImage(req.Image)
-	case ToolGitleaks:
-		_, err := p.ValidatePath(req.Path)
-		return err
 	case ToolNuclei, ToolZAP, ToolSQLMap:
 		return p.ValidateTarget(req.Target)
 	}

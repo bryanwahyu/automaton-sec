@@ -2,6 +2,7 @@ package httpserver
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+	runner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
 )
 
 const testKey = "s3cret"
@@ -199,5 +201,64 @@ func TestSplitAndTrim(t *testing.T) {
 				t.Fatalf("splitAndTrim(%q) = %v, want %v", tc.in, got, tc.want)
 			}
 		}
+	}
+}
+
+func TestVersionEndpointIsPublicAndReportsTheBuild(t *testing.T) {
+	h := NewRouter(Deps{
+		ScansSvc: newStubService(),
+		Pool:     application.NewPool(1, time.Minute),
+		Policy:   domain.TargetPolicy{AllowPrivateTargets: true},
+		Auth:     AuthConfig{WebhookHMACKey: []byte(testKey), APIKeys: []string{"api-key-1"}},
+		Build:    BuildInfo{Version: "v1.2.3", Commit: "abc123", Built: "2026-09-05T10:00:00Z"},
+		ToolVersions: func(context.Context) map[string]runner.ToolVersion {
+			return map[string]runner.ToolVersion{
+				"trivy":  {Version: "Version: 0.74.0", Available: true},
+				"sqlmap": {Available: false, Error: "not installed"},
+			}
+		},
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 without a credential", rec.Code)
+	}
+
+	var body struct {
+		App   BuildInfo                     `json:"app"`
+		Tools map[string]runner.ToolVersion `json:"tools"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decoding response: %v", err)
+	}
+	if body.App.Version != "v1.2.3" || body.App.Commit != "abc123" {
+		t.Fatalf("app = %+v, want the injected build info", body.App)
+	}
+	// A tool the runner knows about but the image does not ship has to be
+	// visible as missing rather than silently absent.
+	if body.Tools["sqlmap"].Available {
+		t.Error("sqlmap should be reported as unavailable")
+	}
+	if !body.Tools["trivy"].Available {
+		t.Error("trivy should be reported as available")
+	}
+}
+
+func TestVersionEndpointWithoutToolProbe(t *testing.T) {
+	h := NewRouter(Deps{
+		ScansSvc: newStubService(),
+		Pool:     application.NewPool(1, time.Minute),
+		Auth:     AuthConfig{Disabled: true},
+		Build:    BuildInfo{Version: "dev"},
+	})
+
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/version", nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), `"tools"`) {
+		t.Error("the tools section should be omitted when no probe is configured")
 	}
 }

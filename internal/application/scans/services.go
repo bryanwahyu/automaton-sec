@@ -36,6 +36,9 @@ func (SystemClock) Now() time.Time { return time.Now() }
 
 // Command untuk trigger scan
 type TriggerScanCommand struct {
+	// ScanID lets the caller decide the id up front so it can be handed back
+	// in the 202 response. Empty means the service generates one.
+	ScanID    string
 	TenantID  string
 	Tool      string
 	Mode      string
@@ -81,8 +84,10 @@ func (s *Service) MarkDone(ctx context.Context, tenant string, res TriggerScanRe
 // TriggerScan jalankan scanner → upload artifact → simpan ke repo
 func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (TriggerScanResult, error) {
 	now := s.Clock.Now()
-	uniqueID := uuid.New().String()
-	id := fmt.Sprintf("%s-%s", uniqueID, cmd.Tool)
+	id := cmd.ScanID
+	if id == "" {
+		id = NewScanID(cmd.Tool)
+	}
 
 	// Create an initial scan row so we always have an ID to reference
 	initial := &domain.Scan{
@@ -232,6 +237,12 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 		RawFormat:   updated.RawFormat,
 		DurationMS:  updated.DurationMS,
 	}, nil
+}
+
+// NewScanID builds the id format the rest of the system expects: a UUID with
+// the tool name appended.
+func NewScanID(tool string) string {
+	return fmt.Sprintf("%s-%s", uuid.New().String(), tool)
 }
 
 // Latest ambil N scan terakhir

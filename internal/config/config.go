@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -56,6 +57,14 @@ type Config struct {
 		AllowedOrigins []string `yaml:"allowedOrigins"`
 	} `yaml:"cors"`
 
+	// RateLimit bounds how many requests a single tenant+IP may make.
+	RateLimit struct {
+		// Burst is the token bucket capacity.
+		Burst int `yaml:"burst"`
+		// PerMinute is the sustained refill rate.
+		PerMinute int `yaml:"perMinute"`
+	} `yaml:"rateLimit"`
+
 	Scanner struct {
 		// MaxConcurrent caps simultaneously running scanner processes.
 		MaxConcurrent int `yaml:"maxConcurrent"`
@@ -91,16 +100,26 @@ func (d *Duration) UnmarshalYAML(value *yaml.Node) error {
 
 func (d Duration) Duration() time.Duration { return time.Duration(d) }
 
-// Load reads config.yaml and applies defaults for anything left unset.
+// Load reads the config file, overlays environment variables, applies defaults,
+// and validates the result.
+//
+// Environment variables win over the file so that secrets need not be written
+// to disk. A missing file is tolerated when the environment supplies enough.
 func Load(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
 	var cfg Config
-	if err := yaml.Unmarshal(data, &cfg); err != nil {
-		return nil, err
+
+	if path != "" {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			if !os.IsNotExist(err) {
+				return nil, err
+			}
+		} else if err := yaml.Unmarshal(data, &cfg); err != nil {
+			return nil, fmt.Errorf("failed to parse config file: %w", err)
+		}
 	}
+
+	cfg.applyEnv()
 	cfg.applyDefaults()
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -108,9 +127,109 @@ func Load(path string) (*Config, error) {
 	return &cfg, nil
 }
 
+// applyEnv overlays environment variables on top of the file.
+func (c *Config) applyEnv() {
+	envInt("SERVER_PORT", &c.Server.Port)
+	envDuration("SERVER_SHUTDOWN_GRACE", &c.Server.ShutdownGrace)
+
+	envString("DB_TYPE", &c.Database.Type)
+	envString("DB_HOST", &c.Database.Host)
+	envInt("DB_PORT", &c.Database.Port)
+	envString("DB_USER", &c.Database.User)
+	envString("DB_PASSWORD", &c.Database.Password)
+	envString("DB_NAME", &c.Database.Name)
+
+	envString("MINIO_ENDPOINT", &c.Minio.Endpoint)
+	envString("MINIO_ACCESS_KEY", &c.Minio.AccessKey)
+	envString("MINIO_SECRET_KEY", &c.Minio.SecretKey)
+	envString("MINIO_BUCKET", &c.Minio.BucketName)
+	envString("MINIO_REGION", &c.Minio.Region)
+	envBool("MINIO_USE_SSL", &c.Minio.UseSSL)
+
+	envString("OPENAI_API_KEY", &c.OpenAI.APIKey)
+	envString("OPENAI_MODEL", &c.OpenAI.Model)
+
+	envString("AUTH_WEBHOOK_HMAC_KEY", &c.Auth.WebhookHMACKey)
+	envList("AUTH_API_KEYS", &c.Auth.APIKeys)
+	envBool("AUTH_DISABLED", &c.Auth.Disabled)
+
+	envList("CORS_ALLOWED_ORIGINS", &c.CORS.AllowedOrigins)
+
+	envInt("SCANNER_MAX_CONCURRENT", &c.Scanner.MaxConcurrent)
+	envDuration("SCANNER_TIMEOUT", &c.Scanner.Timeout)
+	envBool("SCANNER_ALLOW_PRIVATE_TARGETS", &c.Scanner.AllowPrivateTargets)
+	envList("SCANNER_ALLOWED_HOSTS", &c.Scanner.AllowedHosts)
+	envString("SCANNER_WORKSPACE_ROOT", &c.Scanner.WorkspaceRoot)
+
+	envInt("RATE_LIMIT_BURST", &c.RateLimit.Burst)
+	envInt("RATE_LIMIT_PER_MINUTE", &c.RateLimit.PerMinute)
+}
+
+func envString(key string, dst *string) {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		*dst = v
+	}
+}
+
+func envInt(key string, dst *int) {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			*dst = n
+		}
+	}
+}
+
+func envBool(key string, dst *bool) {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			*dst = b
+		}
+	}
+}
+
+// envList reads a comma-separated list, e.g. AUTH_API_KEYS="k1,k2".
+func envList(key string, dst *[]string) {
+	v, ok := os.LookupEnv(key)
+	if !ok || strings.TrimSpace(v) == "" {
+		return
+	}
+	var out []string
+	for _, part := range strings.Split(v, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	*dst = out
+}
+
+func envDuration(key string, dst *Duration) {
+	if v, ok := os.LookupEnv(key); ok && v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			*dst = Duration(d)
+		}
+	}
+}
+
 func (c *Config) applyDefaults() {
 	if c.Server.Port == 0 {
-		c.Server.Port = 8000
+		c.Server.Port = 5000
+	}
+	if c.Database.Host == "" {
+		c.Database.Host = "localhost"
+	}
+	if c.Database.Port == 0 {
+		switch c.Database.Type {
+		case "postgres", "postgresql", "pg":
+			c.Database.Port = 5432
+		default:
+			c.Database.Port = 3306
+		}
+	}
+	if c.RateLimit.Burst <= 0 {
+		c.RateLimit.Burst = 20
+	}
+	if c.RateLimit.PerMinute <= 0 {
+		c.RateLimit.PerMinute = 60
 	}
 	if c.Server.ShutdownGrace == 0 {
 		c.Server.ShutdownGrace = Duration(30 * time.Second)

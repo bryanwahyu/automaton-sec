@@ -1,8 +1,21 @@
 # Copy to config.yaml and fill in. config.yaml is gitignored.
 # Override the location with CONFIG_PATH=/path/to/config.yaml
+#
+# Every value can also come from the environment, which wins over this file --
+# keep secrets there rather than on disk:
+#   SERVER_PORT, SERVER_SHUTDOWN_GRACE
+#   DB_TYPE, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
+#   MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET,
+#   MINIO_REGION, MINIO_USE_SSL
+#   OPENAI_API_KEY, OPENAI_MODEL
+#   AUTH_WEBHOOK_HMAC_KEY, AUTH_API_KEYS (comma-separated), AUTH_DISABLED
+#   CORS_ALLOWED_ORIGINS (comma-separated)
+#   RATE_LIMIT_BURST, RATE_LIMIT_PER_MINUTE
+#   SCANNER_MAX_CONCURRENT, SCANNER_TIMEOUT, SCANNER_ALLOW_PRIVATE_TARGETS,
+#   SCANNER_ALLOWED_HOSTS (comma-separated), SCANNER_WORKSPACE_ROOT
 
 server:
-  port: 8000
+  port: 5000
   # How long to wait for in-flight scans when the process is asked to stop.
   shutdownGrace: 30s
 
@@ -45,6 +58,11 @@ cors:
   allowedOrigins: []
   # allowedOrigins:
   #   - https://dashboard.example.com
+
+# Requests per tenant+IP. Applies to /v1 routes only; probes are exempt.
+rateLimit:
+  burst: 20      # token bucket capacity
+  perMinute: 60  # sustained refill rate
 
 scanner:
   # Scanners are memory-heavy; this caps how many run at once. Extra requests

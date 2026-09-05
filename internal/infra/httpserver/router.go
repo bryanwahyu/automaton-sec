@@ -369,7 +369,12 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 		return errBadRequest(fmt.Errorf("invalid JSON body: %w", err))
 	}
 
+	// The id is minted here so the caller gets it in the 202 and can poll for
+	// the result. Without it a client has no handle on the scan it started.
+	scanID := appscans.NewScanID(body.Tool)
+
 	cmd := appscans.TriggerScanCommand{
+		ScanID:    scanID,
 		TenantID:  tenant,
 		Tool:      body.Tool,
 		Mode:      body.Mode,
@@ -413,6 +418,7 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 	resp := map[string]any{
 		"status":   "queued",
 		"tenant":   tenant,
+		"scan_id":  scanID,
 		"tool":     body.Tool,
 		"branch":   body.Branch,
 		"commit":   body.CommitSHA,

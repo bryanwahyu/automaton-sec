@@ -67,8 +67,11 @@ func (s *Store) Upload(ctx context.Context, localPath, key string) (string, erro
 		return "", err
 	}
 
-	// URL publik (jika bucket public), kalau private harus generate presigned URL
-	url := fmt.Sprintf("http://%s/%s/%s", s.client.EndpointURL().Host, s.bucketName, key)
+	// URL publik (jika bucket public), kalau private harus generate presigned URL.
+	// The scheme has to follow the client: hardcoding http:// produced artifact
+	// URLs that no HTTPS-only endpoint would serve.
+	endpoint := s.client.EndpointURL()
+	url := fmt.Sprintf("%s://%s/%s/%s", endpoint.Scheme, endpoint.Host, s.bucketName, key)
 	return url, nil
 }
 

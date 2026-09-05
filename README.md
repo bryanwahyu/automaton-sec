@@ -12,14 +12,16 @@ A comprehensive Go-based security scanning platform with multiple security tools
 - **SQLMap** - SQL injection detection and exploitation
 
 ### Core Features
-- RESTful API with pagination and filtering
-- Real-time scan progress tracking
+- RESTful API with offset and cursor pagination, plus filtering
+- HMAC-signed webhooks and bearer-key reads; nothing but `/health` is open
+- Target policy that refuses argument-shaped input and private/link-local hosts
+- Bounded scanner pool with per-scan timeouts; a full pool answers `429`
 - AI-powered vulnerability analysis (OpenAI integration)
-- MySQL database for scan results
+- MySQL or PostgreSQL for scan results
 - MinIO/S3 object storage for artifacts
 - Docker containerized deployment
-- CORS support for web applications
-- Comprehensive error handling and logging
+- Configurable CORS allowlist
+- Scan failures recorded per scan and readable over the API
 
 ## 📋 Requirements
 
@@ -50,7 +52,8 @@ security-api/
 │   │   └── storage/     # MinIO/S3 storage
 │   └── config/          # Configuration management
 ├── Dockerfile           # Multi-stage build
-└── docker-compose.yml   # Service orchestration
+├── docker-compose.yml   # Service orchestration
+└── config.yaml.example  # Template for config.yaml
 ```
 
 ## 🚀 Quick Start
@@ -96,14 +99,16 @@ go run cmd/api/main.go
 
 ## ⚙️ Configuration
 
-Create `config.yaml` in the root directory:
+Copy `config.yaml.example` to `config.yaml` and fill it in. `config.yaml` is
+gitignored. Point somewhere else with `CONFIG_PATH=/path/to/config.yaml`.
 
 ```yaml
 server:
   port: 8000
+  shutdownGrace: 30s      # how long to wait for in-flight scans on SIGTERM
 
 database:
-  type: mysql  # or postgres
+  type: mysql             # mysql | postgres
   host: localhost
   port: 3306
   user: root
@@ -111,7 +116,7 @@ database:
   name: security_db
 
 minio:
-  endpoint: minio.example.com
+  endpoint: minio.example.com   # host:port, no scheme
   accessKey: minioadmin
   secretKey: minioadmin
   bucketName: security-scans
@@ -119,39 +124,126 @@ minio:
   useSSL: true
 
 openai:
-  apiKey: sk-your-api-key-here
-  model: gpt-4-mini
+  apiKey: sk-your-api-key-here  # optional; empty disables AI analysis
+  model: gpt-4.1-mini
+
+auth:
+  webhookHmacKey: a-long-random-string
+  apiKeys:
+    - another-long-random-string
+  disabled: false         # local development escape hatch
+
+cors:
+  allowedOrigins: []      # e.g. ["https://dashboard.example.com"]
+
+scanner:
+  maxConcurrent: 2        # simultaneous scanner processes
+  timeout: 30m            # ceiling on a single scan
+  allowPrivateTargets: false
+  allowedHosts: []        # empty = any public host
+  workspaceRoot: ""       # required for gitleaks; empty disables path scans
+```
+
+The server refuses to start unless `auth.webhookHmacKey` or `auth.apiKeys` is
+set, or `auth.disabled: true` is explicit. See [Authentication](#-authentication).
+
+## 🔐 Authentication
+
+Every route except `GET /health` requires a credential.
+
+| Route | Credential |
+| --- | --- |
+| `POST /v1/{tenant}/webhook/security-scan` | `X-Signature: <hex HMAC-SHA256 of the raw body>`, keyed with `auth.webhookHmacKey` |
+| Everything else under `/v1/{tenant}` | `Authorization: Bearer <key>` from `auth.apiKeys` |
+| `GET /health` | none |
+
+If `auth.webhookHmacKey` is unset, the webhook route falls back to bearer
+authentication rather than opening up.
+
+Signing a request body:
+
+```bash
+BODY='{"tool":"trivy","image":"nginx:latest"}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_KEY" -hex | awk '{print $2}')
+
+curl -X POST http://localhost:5002/v1/acme/webhook/security-scan \
+  -H "Content-Type: application/json" \
+  -H "X-Signature: $SIG" \
+  -d "$BODY"
 ```
 
 ## 📡 API Endpoints
 
-### Scans
+Every path is tenant-scoped: `{tenant}` is an arbitrary identifier you choose,
+and scans are only ever read back under the tenant that created them.
 
-#### Create Scan
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/health` | Liveness probe. No credential. |
+| `POST` | `/v1/{tenant}/webhook/security-scan` | Queue a scan |
+| `POST` | `/v1/{tenant}/scans/{id}/retry` | Re-run a scan |
+| `GET` | `/v1/{tenant}/scans` | Paginated list |
+| `GET` | `/v1/{tenant}/scans/latest` | Cursor-paginated recent scans |
+| `GET` | `/v1/{tenant}/scans/{id}` | One scan; `?with=analysis` includes the AI result |
+| `GET` | `/v1/{tenant}/scans/{id}/errors` | Recorded failures for a scan |
+| `GET` | `/v1/{tenant}/summary` | Severity rollup over the last `?days=N` |
+| `POST` | `/v1/{tenant}/ai/analyze` | Queue AI analysis of a scan artifact |
+| `GET` | `/v1/{tenant}/ai/analyze` | Paginated analyses |
+| `POST` | `/v1/{tenant}/ai/analyze/retry` | Re-run an analysis |
+
+### Queue a scan
+
 ```bash
-POST /api/scans
+POST /v1/{tenant}/webhook/security-scan
 Content-Type: application/json
+X-Signature: <hex HMAC-SHA256 of the body>
 
 {
-  "tool": "trivy",
-  "image": "nginx:latest"
+  "tool": "trivy",              // trivy | nuclei | gitleaks | zap | sqlmap
+  "image": "nginx:latest",      // trivy
+  "target": "https://example.com", // nuclei | zap | sqlmap
+  "path": "/workspace/repo",    // gitleaks, must sit under scanner.workspaceRoot
+  "mode": "image",              // optional, free-form
+  "source": "github-actions",   // optional
+  "commit_sha": "abc123",       // optional
+  "branch": "main",             // optional
+  "metadata": {"pipeline": "nightly"} // optional, stored verbatim
 }
 ```
 
-**Available Tools:**
-- `trivy` - Container image scanning
-- `nuclei` - Web vulnerability scanning
-- `gitleaks` - Git secret scanning
-- `zap` - Web app security testing
-- `sqlmap` - SQL injection testing
+Scans run in the background, so the response is immediate:
 
-#### List Scans (Paginated)
-```bash
-GET /api/scans?page=1&pageSize=20&tool=trivy&status=completed
-
-Response:
+```json
 {
-  "data": [...],
+  "status": "queued",
+  "tenant": "acme",
+  "tool": "trivy",
+  "branch": "main",
+  "commit": "abc123",
+  "message": "scan started in background",
+  "queuedAt": "2026-09-05T10:00:00Z"
+}
+```
+
+| Status | Meaning |
+| --- | --- |
+| `202 Accepted` | Queued. Poll `GET /v1/{tenant}/scans` for the result. |
+| `400 Bad Request` | Malformed body, unknown tool, or a target the policy rejects |
+| `401 Unauthorized` | Missing or wrong signature |
+| `429 Too Many Requests` | `scanner.maxConcurrent` reached; a `Retry-After` header is sent |
+
+### List scans (offset pagination)
+
+```bash
+GET /v1/{tenant}/scans?page=1&page_size=20&tool=trivy&status=success&branch=main&target=example.com
+Authorization: Bearer <api-key>
+```
+
+Note the parameter is `page_size`, while the response uses `pageSize`:
+
+```json
+{
+  "data": [ ... ],
   "page": 1,
   "pageSize": 20,
   "totalItems": 100,
@@ -159,103 +251,125 @@ Response:
 }
 ```
 
-**Query Parameters:**
-- `page` - Page number (default: 1)
-- `pageSize` - Items per page (default: 20)
-- `tool` - Filter by tool (trivy, nuclei, etc.)
-- `status` - Filter by status (running, completed, failed)
-- `target` - Filter by target (exact match)
-- `branch` - Filter by branch
+### Latest scans (cursor pagination)
 
-#### Get Scan Details
 ```bash
-GET /api/scans/{id}
+GET /v1/{tenant}/scans/latest?limit=20
+GET /v1/{tenant}/scans/latest?limit=20&cursor_time=2026-09-05T10:00:00Z&cursor_id=abc-123
 ```
 
-#### Get Latest Scans
-```bash
-GET /api/scans/latest?limit=10
+```json
+{
+  "data": [ ... ],
+  "meta": {
+    "limit": 20,
+    "has_more": true,
+    "is_first_page": true,
+    "next_cursor": {
+      "cursor_time": "2026-09-05T09:12:00Z",
+      "cursor_id": "abc-123-trivy",
+      "next_url": "/v1/acme/scans/latest?limit=20&cursor_time=...&cursor_id=..."
+    }
+  }
+}
 ```
 
-#### Get Scan Summary
+### Retry a scan
+
 ```bash
-GET /api/scans/summary?days=7
+POST /v1/{tenant}/scans/{id}/retry
+Authorization: Bearer <api-key>
 ```
+
+Answers `202`, or `429` when the scanner pool is full. Retries reuse the stored
+target, image, and path of the original scan.
+
+### Summary
+
+```bash
+GET /v1/{tenant}/summary?days=7
+Authorization: Bearer <api-key>
+```
+
+```json
+{"total_scans": 42, "critical": 3, "high": 11, "medium": 20}
+```
+
+### AI analysis
+
+```bash
+POST /v1/{tenant}/ai/analyze
+Authorization: Bearer <api-key>
+Content-Type: application/json
+
+{"scan_id": "abc-123-trivy"}
+```
+
+Returns `202` with an `analysis_id`. Read results with
+`GET /v1/{tenant}/ai/analyze?page=1&page_size=20`, or fetch a scan with
+`GET /v1/{tenant}/scans/{id}?with=analysis`.
 
 ## 🔍 Security Tool Examples
 
-### Trivy - Container Image Scanning
+All examples assume `WEBHOOK_KEY` holds `auth.webhookHmacKey` and use this helper:
+
 ```bash
-curl -X POST http://localhost:5002/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "trivy",
-    "image": "nginx:latest"
-  }'
+scan() {
+  local body="$1"
+  local sig
+  sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_KEY" -hex | awk '{print $2}')
+  curl -X POST http://localhost:5002/v1/acme/webhook/security-scan \
+    -H "Content-Type: application/json" \
+    -H "X-Signature: $sig" \
+    -d "$body"
+}
 ```
 
-**Scans for:**
-- Vulnerabilities (CVEs)
-- Secrets (API keys, tokens)
-- Misconfigurations
+### Trivy — container image scanning
 
-### Nuclei - Web Vulnerability Scanning
 ```bash
-curl -X POST http://localhost:5002/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "nuclei",
-    "target": "https://example.com"
-  }'
+scan '{"tool":"trivy","image":"nginx:latest"}'
 ```
 
-**Detects:**
-- Known CVEs
-- Misconfigurations
-- Exposed panels
-- Vulnerabilities
+Scans for vulnerabilities (CVEs), secrets, and misconfigurations.
 
-### Gitleaks - Secret Scanning
+### Nuclei — web vulnerability scanning
+
 ```bash
-curl -X POST http://localhost:5002/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "gitleaks",
-    "path": "/path/to/repo"
-  }'
+scan '{"tool":"nuclei","target":"https://example.com"}'
 ```
 
-**Finds:**
-- API keys
-- Passwords
-- Private keys
-- Tokens
+Detects known CVEs, misconfigurations, and exposed panels.
 
-### ZAP - Web App Security
+### Gitleaks — secret scanning
+
 ```bash
-curl -X POST http://localhost:5002/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "zap",
-    "target": "https://example.com"
-  }'
+scan '{"tool":"gitleaks","path":"/workspace/repo"}'
 ```
 
-**Tests for:**
-- XSS
-- SQL Injection
-- CSRF
-- Security headers
+Finds API keys, passwords, private keys, and tokens. The path must resolve
+inside `scanner.workspaceRoot`; filesystem scans are refused when that is unset.
 
-### SQLMap - SQL Injection
+### ZAP — web app security
+
 ```bash
-curl -X POST http://localhost:5002/api/scans \
-  -H "Content-Type: application/json" \
-  -d '{
-    "tool": "sqlmap",
-    "target": "https://example.com/page?id=1"
-  }'
+scan '{"tool":"zap","target":"https://example.com"}'
 ```
+
+Tests for XSS, SQL injection, CSRF, and missing security headers.
+
+### SQLMap — SQL injection
+
+```bash
+scan '{"tool":"sqlmap","target":"https://example.com/page?id=1"}'
+```
+
+### Target restrictions
+
+By default the API refuses to scan loopback, link-local, and RFC1918
+destinations — otherwise any caller could point it at `169.254.169.254` or an
+internal service and read the findings. Set `scanner.allowPrivateTargets: true`
+to allow them, and `scanner.allowedHosts` to restrict scanning to hosts you own.
 
 ## 🐳 Docker Services
 
@@ -267,12 +381,20 @@ The docker-compose stack includes:
 
 **Note:** Host port 5002 is used instead of 5000 to avoid conflicts with macOS ControlCenter.
 
+The compose profiles run with `auth.disabled: true` in `config.postgres.yaml`.
+That is a local-development setting — set real credentials before exposing the
+service to anything but your own machine.
+
 ## 🛠️ Development
 
 ### Running Tests
 ```bash
 go test ./...
+go test -race ./...
 ```
+
+CI (`.github/workflows/ci.yml`) runs `gofmt`, `go vet`, `go build`,
+`go test -race`, `govulncheck`, and a Docker build on every push and PR.
 
 ### Building
 ```bash
@@ -285,9 +407,15 @@ docker build -t security-api:latest .
 
 ### Database Migrations
 ```bash
-# Apply migrations
+# MySQL
 mysql -u root -p security_db < internal/infra/db/mysql/migration.sql
+
+# PostgreSQL
+psql -U postgres -d security_db -f internal/infra/db/postgres/migration.sql
 ```
+
+Existing databases need the `path` and `metadata` columns added; both migration
+files carry the `ALTER TABLE` statements at the top of the scans section.
 
 ## 📊 Response Format
 
@@ -296,10 +424,11 @@ mysql -u root -p security_db < internal/infra/db/mysql/migration.sql
 {
   "id": "scan-123",
   "tenant_id": "default",
-  "triggered_at": "2025-11-16T10:00:00Z",
+  "triggered_at": "2026-09-05T10:00:00Z",
   "tool": "trivy",
-  "target": "nginx:latest",
-  "status": "completed",
+  "image": "nginx:latest",
+  "path": "",
+  "status": "success",
   "counts": {
     "critical": 5,
     "high": 12,
@@ -308,9 +437,19 @@ mysql -u root -p security_db < internal/infra/db/mysql/migration.sql
     "total": 28
   },
   "artifact_url": "https://minio.example.com/scans/artifact.json",
-  "duration_ms": 45000
+  "raw_format": "json",
+  "duration_ms": 45000,
+  "source": "github-actions",
+  "commit_sha": "abc123",
+  "branch": "main",
+  "metadata": {"pipeline": "nightly"}
 }
 ```
+
+`status` is one of `running`, `success`, `failed`, or `error`. A scanner that
+exits non-zero purely to report findings still counts as `success`; `failed`
+means the tool itself failed, and `error` means the scan never produced a
+usable artifact.
 
 ## 🔐 Security Tools Versions
 

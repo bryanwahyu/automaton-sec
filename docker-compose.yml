@@ -13,6 +13,9 @@ services:
       - ./config.yaml:/app/config.yaml:ro
       - ./temp:/app/temp   # folder sementara untuk artifacts
       - ./temp/zap:/zap/wrk   # ZAP working directory
+      # Repositories to scan with gitleaks, semgrep, or osv-scanner.
+      # Must match scanner.workspaceRoot in the config.
+      - ./workspace:/app/workspace
     user: root   # Temporarily run as root to ensure proper permissions
   postgres:
     image: postgres:15
@@ -39,6 +42,7 @@ services:
       - ./config.postgres.yaml:/app/config.postgres.yaml:ro
       - ./temp:/app/temp
       - ./temp/zap:/zap/wrk
+      - ./workspace:/app/workspace
     depends_on:
       - postgres
     user: root

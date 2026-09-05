@@ -13,11 +13,11 @@ import (
 // ValidateTool checks if the tool name is in the allowed list
 func ValidateTool(tool string) error {
 	allowed := map[string]bool{
-		"trivy":   true,
-		"nuclei":  true,
+		"trivy":    true,
+		"nuclei":   true,
 		"gitleaks": true,
-		"zap":     true,
-		"sqlmap":  true,
+		"zap":      true,
+		"sqlmap":   true,
 	}
 
 	if !allowed[strings.ToLower(tool)] {
@@ -54,9 +54,9 @@ func ValidateURL(rawURL string) error {
 
 	// Block private IP ranges (basic check)
 	if strings.HasPrefix(host, "10.") ||
-	   strings.HasPrefix(host, "192.168.") ||
-	   strings.HasPrefix(host, "172.16.") ||
-	   strings.HasPrefix(host, "172.31.") {
+		strings.HasPrefix(host, "192.168.") ||
+		strings.HasPrefix(host, "172.16.") ||
+		strings.HasPrefix(host, "172.31.") {
 		return fmt.Errorf("private IP ranges are not allowed")
 	}
 

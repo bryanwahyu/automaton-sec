@@ -5,7 +5,6 @@ import (
 	"time"
 )
 
-
 // Repository port (interface untuk persistence)
 type Repository interface {
 	Save(ctx context.Context, s *Scan) error
@@ -13,7 +12,7 @@ type Repository interface {
 	Latest(ctx context.Context, tenant string, limit int) ([]*Scan, error)
 	Summary(ctx context.Context, tenant string, sinceDays int) (int, int, int, int, error)
 	// tambahan untuk background mode
-	UpdateStatus(ctx context.Context, tenant string, status Status) error
+	UpdateStatus(ctx context.Context, tenant string, id ScanID, status Status) error
 	UpdateResult(ctx context.Context, tenant string, id ScanID, status Status, artifactURL string, counts SeverityCounts) error
 	// update only counts for a given scan id
 	UpdateCounts(ctx context.Context, tenant string, id ScanID, counts SeverityCounts) error

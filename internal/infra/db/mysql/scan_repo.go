@@ -23,12 +23,12 @@ func NewScanRepository(db *sql.DB) *ScanRepository {
 func (r *ScanRepository) Save(ctx context.Context, s *domain.Scan) error {
 	const q = `
 INSERT INTO security_scans
-(id, tenant_id, triggered_at, tool, target, image, status,
+(id, tenant_id, triggered_at, tool, target, image, path, status,
  critical, high, medium, low, findings_total,
- artifact_url, raw_format, duration_ms, source, commit_sha, branch)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+ artifact_url, raw_format, duration_ms, source, commit_sha, branch, metadata)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 ON DUPLICATE KEY UPDATE
- status=VALUES(status),
+ status=VALUES(status), path=VALUES(path), metadata=VALUES(metadata),
  critical=VALUES(critical), high=VALUES(high), medium=VALUES(medium), low=VALUES(low),
  findings_total=VALUES(findings_total),
  artifact_url=VALUES(artifact_url), raw_format=VALUES(raw_format), duration_ms=VALUES(duration_ms);
@@ -43,11 +43,16 @@ ON DUPLICATE KEY UPDATE
 	}
 	// Numeric fields (ints) are value types and already default to 0
 
-	_, err := r.db.ExecContext(ctx, q,
-		s.ID, tenant, triggered, tool, s.Target, s.Image, status,
+	metadata, err := marshalMetadata(s.Metadata)
+	if err != nil {
+		return err
+	}
+
+	_, err = r.db.ExecContext(ctx, q,
+		s.ID, tenant, triggered, tool, s.Target, s.Image, s.Path, status,
 		s.Counts.Critical, s.Counts.High, s.Counts.Medium, s.Counts.Low, s.Counts.Total,
 		s.ArtifactURL, s.RawFormat, s.DurationMS,
-		s.Source, s.CommitSHA, s.Branch,
+		s.Source, s.CommitSHA, s.Branch, metadata,
 	)
 	return err
 }
@@ -55,25 +60,18 @@ ON DUPLICATE KEY UPDATE
 // Get by ID + Tenant
 func (r *ScanRepository) Get(ctx context.Context, tenant string, id domain.ScanID) (*domain.Scan, error) {
 	const q = `
-SELECT id, tenant_id, triggered_at, tool, target, image, status,
+SELECT id, tenant_id, triggered_at, tool, target, image, path, status,
        critical, high, medium, low, findings_total,
-       artifact_url, raw_format, duration_ms, source, commit_sha, branch
+       artifact_url, raw_format, duration_ms, source, commit_sha, branch, metadata
 FROM security_scans
 WHERE tenant_id=? AND id=? LIMIT 1;
 `
 	row := r.db.QueryRowContext(ctx, q, tenant, id)
 
 	var s domain.Scan
-	var crit, hi, med, lo, tot int
-	if err := row.Scan(
-		&s.ID, &s.TenantID, &s.TriggeredAt, &s.Tool, &s.Target, &s.Image, &s.Status,
-		&crit, &hi, &med, &lo, &tot,
-		&s.ArtifactURL, &s.RawFormat, &s.DurationMS,
-		&s.Source, &s.CommitSHA, &s.Branch,
-	); err != nil {
+	if err := scanInto(row, &s); err != nil {
 		return nil, err
 	}
-	s.Counts = domain.SeverityCounts{Critical: crit, High: hi, Medium: med, Low: lo, Total: tot}
 	return &s, nil
 }
 
@@ -83,9 +81,9 @@ func (r *ScanRepository) Latest(ctx context.Context, tenant string, limit int) (
 		limit = 20
 	}
 	const q = `
-SELECT id, tenant_id, triggered_at, tool, target, image, status,
+SELECT id, tenant_id, triggered_at, tool, target, image, path, status,
        critical, high, medium, low, findings_total,
-       artifact_url, raw_format, duration_ms, source, commit_sha, branch
+       artifact_url, raw_format, duration_ms, source, commit_sha, branch, metadata
 FROM security_scans
 WHERE tenant_id=? ORDER BY triggered_at DESC LIMIT ?;
 `
@@ -98,16 +96,9 @@ WHERE tenant_id=? ORDER BY triggered_at DESC LIMIT ?;
 	var out []*domain.Scan
 	for rows.Next() {
 		var s domain.Scan
-		var crit, hi, med, lo, tot int
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.TriggeredAt, &s.Tool, &s.Target, &s.Image, &s.Status,
-			&crit, &hi, &med, &lo, &tot,
-			&s.ArtifactURL, &s.RawFormat, &s.DurationMS,
-			&s.Source, &s.CommitSHA, &s.Branch,
-		); err != nil {
+		if err := scanInto(rows, &s); err != nil {
 			return nil, err
 		}
-		s.Counts = domain.SeverityCounts{Critical: crit, High: hi, Medium: med, Low: lo, Total: tot}
 		out = append(out, &s)
 	}
 	return out, rows.Err()
@@ -146,9 +137,9 @@ func (r *ScanRepository) Paginate(ctx context.Context, tenant string, page, page
 	offset := (page - 1) * pageSize
 
 	query := `
-SELECT id, tenant_id, triggered_at, tool, target, image, status,
+SELECT id, tenant_id, triggered_at, tool, target, image, path, status,
        critical, high, medium, low, findings_total,
-       artifact_url, raw_format, duration_ms, source, commit_sha, branch
+       artifact_url, raw_format, duration_ms, source, commit_sha, branch, metadata
 FROM security_scans
 WHERE tenant_id=?`
 
@@ -189,16 +180,9 @@ WHERE tenant_id=?`
 	var scans []*domain.Scan
 	for rows.Next() {
 		var s domain.Scan
-		var crit, hi, med, lo, tot int
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.TriggeredAt, &s.Tool, &s.Target, &s.Image, &s.Status,
-			&crit, &hi, &med, &lo, &tot,
-			&s.ArtifactURL, &s.RawFormat, &s.DurationMS,
-			&s.Source, &s.CommitSHA, &s.Branch,
-		); err != nil {
+		if err := scanInto(rows, &s); err != nil {
 			return domain.PaginatedResult{}, fmt.Errorf("scanning row: %w", err)
 		}
-		s.Counts = domain.SeverityCounts{Critical: crit, High: hi, Medium: med, Low: lo, Total: tot}
 		scans = append(scans, &s)
 	}
 	if err = rows.Err(); err != nil {
@@ -220,15 +204,16 @@ WHERE tenant_id=?`
 	}, nil
 }
 
-// UpdateStatus hanya update kolom status
-func (r *ScanRepository) UpdateStatus(ctx context.Context, tenant string, status domain.Status) error {
+// UpdateStatus updates the status of one specific scan.
+//
+// It is addressed by id, not by "the newest row for this tenant" — the latter
+// wrote the status of an unrelated scan whenever two ran concurrently.
+func (r *ScanRepository) UpdateStatus(ctx context.Context, tenant string, id domain.ScanID, status domain.Status) error {
 	const q = `
 UPDATE security_scans
 SET status = ?
-WHERE tenant_id = ?
-ORDER BY triggered_at DESC
-LIMIT 1;`
-	_, err := r.db.ExecContext(ctx, q, status, tenant)
+WHERE tenant_id = ? AND id = ?;`
+	_, err := r.db.ExecContext(ctx, q, status, tenant, id)
 	return err
 }
 
@@ -260,9 +245,9 @@ func (r *ScanRepository) Cursor(ctx context.Context, tenant string, cursorTime t
 	}
 
 	const q = `
-SELECT id, tenant_id, triggered_at, tool, target, image, status,
+SELECT id, tenant_id, triggered_at, tool, target, image, path, status,
        critical, high, medium, low, findings_total,
-       artifact_url, raw_format, duration_ms, source, commit_sha, branch
+       artifact_url, raw_format, duration_ms, source, commit_sha, branch, metadata
 FROM security_scans
 WHERE tenant_id=? 
   AND (triggered_at < ? OR (triggered_at = ? AND id < ?))
@@ -278,16 +263,9 @@ LIMIT ?;
 	var out []*domain.Scan
 	for rows.Next() {
 		var s domain.Scan
-		var crit, hi, med, lo, tot int
-		if err := rows.Scan(
-			&s.ID, &s.TenantID, &s.TriggeredAt, &s.Tool, &s.Target, &s.Image, &s.Status,
-			&crit, &hi, &med, &lo, &tot,
-			&s.ArtifactURL, &s.RawFormat, &s.DurationMS,
-			&s.Source, &s.CommitSHA, &s.Branch,
-		); err != nil {
+		if err := scanInto(rows, &s); err != nil {
 			return nil, err
 		}
-		s.Counts = domain.SeverityCounts{Critical: crit, High: hi, Medium: med, Low: lo, Total: tot}
 		out = append(out, &s)
 	}
 	return out, rows.Err()

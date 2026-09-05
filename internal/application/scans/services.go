@@ -57,27 +57,22 @@ type TriggerScanResult struct {
 	DurationMS  int64                 `json:"duration_ms"`
 }
 
-// TriggerScanUntilDone → jalanin scan dengan context.Background()
-// cocok dipanggil dari goroutine di router supaya gak kena context canceled
-func (s *Service) TriggerScanUntilDone(cmd TriggerScanCommand) (TriggerScanResult, error) {
-	return s.TriggerScan(context.Background(), cmd)
+// UpdateStatus sets the status of one specific scan.
+//
+// It takes a scan ID on purpose: the previous signature updated "the newest
+// scan of this tenant", which silently corrupted the status of an unrelated
+// scan whenever two ran concurrently.
+func (s *Service) UpdateStatus(ctx context.Context, tenant string, id domain.ScanID, status domain.Status) error {
+	return s.Repo.UpdateStatus(ctx, tenant, id, status)
 }
 
-// UpdateStatus → untuk update status scan di repo (misalnya "queued", "running", "failed")
-func (s *Service) UpdateStatus(tenant string, status string) error {
-	// Implementasi sederhana: update ke repo
-	// Bisa diperluas untuk logging / audit
-	return s.Repo.UpdateStatus(context.Background(), tenant, domain.Status(status))
-}
-
-// MarkDone → update status scan jadi done/success + simpan hasil
-func (s *Service) MarkDone(tenant string, res TriggerScanResult) error {
-	// kamu bisa langsung update status di repo
+// MarkDone persists the final result of a finished scan.
+func (s *Service) MarkDone(ctx context.Context, tenant string, res TriggerScanResult) error {
 	return s.Repo.UpdateResult(
-		context.Background(),
+		ctx,
 		tenant,
 		domain.ScanID(res.ID),
-		domain.StatusSuccess,
+		domain.Status(res.Status),
 		res.ArtifactURL,
 		res.Counts,
 	)
@@ -98,7 +93,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 		Target:      cmd.Target,
 		Image:       cmd.Image,
 		Path:        cmd.Path,
-		Status:      domain.Status("running"),
+		Status:      domain.StatusRunning,
 		Counts:      domain.SeverityCounts{},
 		ArtifactURL: "",
 		RawFormat:   "",
@@ -122,7 +117,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 		Target: cmd.Target,
 	})
 	if err != nil {
-		_ = s.Repo.UpdateStatus(context.Background(), cmd.TenantID, domain.StatusError)
+		s.markError(ctx, cmd.TenantID, domain.ScanID(id))
 		return TriggerScanResult{ID: id, Status: string(domain.StatusError)}, err
 	}
 
@@ -132,6 +127,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 	if err != nil {
 		// Clean up the temporary file even if upload fails
 		os.Remove(res.LocalArtifactPath)
+		s.markError(ctx, cmd.TenantID, domain.ScanID(id))
 		return TriggerScanResult{ID: id, Status: string(domain.StatusError)}, err
 	}
 
@@ -144,7 +140,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 		Target:      cmd.Target,
 		Image:       cmd.Image,
 		Path:        cmd.Path,
-		Status:      statusFromExit(res.ExitCode),
+		Status:      statusFromRun(res),
 		Counts:      res.Counts,
 		ArtifactURL: url,
 		RawFormat:   res.RawFormat,
@@ -181,7 +177,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 	}
 
 	// tandai running
-	_ = s.Repo.UpdateStatus(context.Background(), tenant, domain.Status("running"))
+	_ = s.Repo.UpdateStatus(ctx, tenant, id, domain.StatusRunning)
 
 	// jalankan runner sekali tanpa retry
 	res, err := s.Runner.Run(ctx, domain.RunRequest{
@@ -192,7 +188,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 		Target: existing.Target,
 	})
 	if err != nil {
-		_ = s.Repo.UpdateStatus(context.Background(), tenant, domain.StatusError)
+		s.markError(ctx, tenant, existing.ID)
 		return TriggerScanResult{ID: string(existing.ID), Status: string(domain.StatusError)}, err
 	}
 
@@ -201,6 +197,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 	url, uerr := s.Artifacts.UploadAndCleanup(ctx, res.LocalArtifactPath, key)
 	if uerr != nil {
 		os.Remove(res.LocalArtifactPath)
+		s.markError(ctx, tenant, existing.ID)
 		return TriggerScanResult{ID: string(existing.ID), Status: string(domain.StatusError)}, uerr
 	}
 
@@ -213,7 +210,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 		Target:      existing.Target,
 		Image:       existing.Image,
 		Path:        existing.Path,
-		Status:      statusFromExit(res.ExitCode),
+		Status:      statusFromRun(res),
 		Counts:      res.Counts,
 		ArtifactURL: url,
 		RawFormat:   res.RawFormat,
@@ -300,10 +297,22 @@ func (s *Service) Summary(ctx context.Context, tenant string, sinceDays int) (ma
 	}, nil
 }
 
-// helper
-func statusFromExit(code int) domain.Status {
-	if code == 0 {
+// statusFromRun maps a completed run to a stored status.
+//
+// A scanner that exits non-zero purely because it found something has still
+// succeeded; the runner reports that as HasFindings. Only a genuine tool
+// failure becomes StatusFailed.
+func statusFromRun(res domain.RunResult) domain.Status {
+	if res.ExitCode == 0 || res.HasFindings {
 		return domain.StatusSuccess
 	}
 	return domain.StatusFailed
+}
+
+// markError records a failure without inheriting the cancelled scan context —
+// otherwise a timed-out scan could never write its own error status.
+func (s *Service) markError(ctx context.Context, tenant string, id domain.ScanID) {
+	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+	defer cancel()
+	_ = s.Repo.UpdateStatus(writeCtx, tenant, id, domain.StatusError)
 }

@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS security_scans (
   tool           varchar(32)  NOT NULL,
   target         text,
   image          text,
+  path           text,
   status         varchar(16)  NOT NULL,
   critical       integer       NOT NULL DEFAULT 0,
   high           integer       NOT NULL DEFAULT 0,
@@ -16,9 +17,14 @@ CREATE TABLE IF NOT EXISTS security_scans (
   duration_ms    bigint,
   source         varchar(32),
   commit_sha     varchar(64),
-  branch         varchar(64)
+  branch         varchar(64),
+  metadata       jsonb
 );
 CREATE INDEX IF NOT EXISTS idx_tenant_dt ON security_scans (tenant_id, triggered_at DESC);
+
+-- Migrations for databases created before these columns existed.
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS path text;
+ALTER TABLE security_scans ADD COLUMN IF NOT EXISTS metadata jsonb;
 
 CREATE TABLE IF NOT EXISTS security_analyze (
   id          varchar(64)  PRIMARY KEY,

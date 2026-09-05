@@ -8,11 +8,11 @@ import (
 
 // TokenBucket implements token bucket rate limiting
 type TokenBucket struct {
-	mu           sync.Mutex
-	capacity     int
-	tokens       int
-	refillRate   int           // tokens per second
-	lastRefill   time.Time
+	mu         sync.Mutex
+	capacity   int
+	tokens     int
+	refillRate int // tokens per second
+	lastRefill time.Time
 }
 
 func NewTokenBucket(capacity, refillRate int) *TokenBucket {
@@ -52,16 +52,16 @@ func (tb *TokenBucket) Allow() bool {
 
 // RateLimiter manages rate limits per tenant
 type RateLimiter struct {
-	mu      sync.RWMutex
-	buckets map[string]*TokenBucket
-	capacity int
+	mu         sync.RWMutex
+	buckets    map[string]*TokenBucket
+	capacity   int
 	refillRate int
 }
 
 func NewRateLimiter(capacity, refillRate int) *RateLimiter {
 	rl := &RateLimiter{
-		buckets: make(map[string]*TokenBucket),
-		capacity: capacity,
+		buckets:    make(map[string]*TokenBucket),
+		capacity:   capacity,
 		refillRate: refillRate,
 	}
 

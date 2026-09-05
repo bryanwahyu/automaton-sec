@@ -5,6 +5,7 @@ CREATE TABLE IF NOT EXISTS security_scans (
   tool           varchar(32)  NOT NULL,
   target         text,
   image          text,
+  path           text,
   status         varchar(16)  NOT NULL,
   critical       int NOT NULL DEFAULT 0,
   high           int NOT NULL DEFAULT 0,
@@ -17,6 +18,7 @@ CREATE TABLE IF NOT EXISTS security_scans (
   source         varchar(32),
   commit_sha     varchar(64),
   branch         varchar(64),
+  metadata       json,
   PRIMARY KEY (id),
   KEY idx_tenant_dt (tenant_id, triggered_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
@@ -50,3 +52,11 @@ CREATE TABLE IF NOT EXISTS security_scan_errors (
   KEY idx_err_scan (scan_id),
   CONSTRAINT fk_err_scan FOREIGN KEY (scan_id) REFERENCES security_scans(id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- ---------------------------------------------------------------------------
+-- Migrations for databases created before these columns existed.
+-- MySQL 8.0.29+ supports IF NOT EXISTS on ADD COLUMN; on older versions run
+-- these once and ignore the duplicate-column error.
+-- ---------------------------------------------------------------------------
+-- ALTER TABLE security_scans ADD COLUMN path text AFTER image;
+-- ALTER TABLE security_scans ADD COLUMN metadata json AFTER branch;

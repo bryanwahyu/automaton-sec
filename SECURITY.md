@@ -25,12 +25,16 @@ Automaton-Sec is a security scanning orchestration platform. This document outli
 #### 3. **CORS Misconfiguration Fix**
 - **Location**: `internal/infra/httpserver/router.go`
 - **Before**: `AllowedOrigins: ["*"]` (allows any origin - **DANGEROUS**)
-- **After**: Restricted to specific domains with credentials support
-- **Action Required**: Update `AllowedOrigins` with your actual frontend domains in production
+- **After**: Read from `cors.allowedOrigins` in config (or `CORS_ALLOWED_ORIGINS`).
+  Empty means no cross-origin access; nothing is hardcoded.
 
 #### 4. **Path Traversal Protection**
-- **Location**: `internal/middleware/validator.go`
-- **Protection**: Blocks `../`, absolute paths to sensitive directories, and malicious patterns
+- **Location**: `internal/domain/scans/validate.go` (`TargetPolicy.ValidatePath`),
+  with the older helpers still in `internal/middleware/validator.go`
+- **Protection**: Gitleaks paths are resolved and required to stay inside
+  `scanner.workspaceRoot`; filesystem scans are refused outright when that is
+  unset. Values starting with `-` are rejected so they cannot be read as
+  scanner flags.
 
 #### 5. **SSRF (Server-Side Request Forgery) Protection**
 - **Location**: `internal/middleware/validator.go`
@@ -142,29 +146,31 @@ Automaton-Sec is a security scanning orchestration platform. This document outli
   ```
 
 #### 3. **CORS Origins Need Configuration**
-- Default CORS origins are set to localhost
-- **Action Required**: Update `router.go` line 40 with your domains:
-  ```go
-  AllowedOrigins: []string{
-      "https://yourdomain.com",
-      "https://app.yourdomain.com",
-  },
-  ```
+- Set `cors.allowedOrigins` in `config.yaml`, or `CORS_ALLOWED_ORIGINS` in the
+  environment. Empty means browsers get no cross-origin access at all.
 
 #### 4. **Secrets in Configuration**
-- If using `config.yaml`, secrets are in plaintext
-- **Recommendation**: Use environment variables or secret management (AWS Secrets Manager, HashiCorp Vault, etc.)
+- Every setting can come from the environment, which takes precedence over
+  `config.yaml`; see the header of `config.yaml.example` for the variable names.
+- **Recommendation**: Keep secrets in the environment or a secret manager
+  (AWS Secrets Manager, HashiCorp Vault) rather than on disk.
 
 #### 5. **Background Goroutines**
-- Scans and AI analysis run in background goroutines
-- **Consideration**: No cancellation mechanism currently implemented
-- **Recommendation**: Implement context cancellation for resource cleanup
+- Scans run on a bounded worker pool (`scanner.maxConcurrent`) and each one gets
+  a `scanner.timeout` deadline, so a hung scanner is cancelled rather than
+  running forever. A saturated pool answers `429` with `Retry-After`.
+- Shutdown drains the pool within `server.shutdownGrace`.
+- **Remaining**: AI analysis still runs in an unbounded goroutine.
 
 ### 📋 **Security Checklist for Production**
 
-- [ ] **Enable Authentication**: Add API key or JWT authentication
-- [ ] **Enable Rate Limiting**: Protect against DoS attacks
-- [ ] **Configure CORS**: Set proper allowed origins
+- [x] **Enable Authentication**: HMAC-signed webhooks and bearer API keys are
+      enforced on every route except `/health`, `/ready`, and `/metrics`. The
+      server refuses to start unless credentials are configured or
+      `auth.disabled: true` is explicit.
+- [x] **Enable Rate Limiting**: Token bucket per tenant+IP on all `/v1` routes,
+      configured under `rateLimit`.
+- [ ] **Configure CORS**: Set `cors.allowedOrigins` to your own domains
 - [ ] **Use Environment Variables**: Never commit secrets to git
 - [ ] **Enable TLS/HTTPS**: Use reverse proxy (nginx, Caddy) with SSL certificates
 - [ ] **Database Security**:

@@ -1,8 +1,10 @@
+# Local docker-compose profile (security-api-pg). Development credentials only.
 server:
   port: 5000
+  shutdownGrace: 30s
 database:
   type: postgres
-  host: localhost
+  host: postgres
   port: 5432
   user: postgres
   password: postgres
@@ -17,4 +19,18 @@ minio:
 openai:
   apiKey: ""
   model: gpt-4.1-mini
-
+auth:
+  # Local development only. Set webhookHmacKey/apiKeys and flip this to false
+  # for anything reachable by another machine.
+  disabled: true
+cors:
+  allowedOrigins: []
+rateLimit:
+  burst: 20
+  perMinute: 60
+scanner:
+  maxConcurrent: 2
+  timeout: 30m
+  allowPrivateTargets: false
+  allowedHosts: []
+  workspaceRoot: /app/workspace

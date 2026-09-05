@@ -1,13 +1,13 @@
 package prompt
 
 import (
-    "encoding/json"
-    "fmt"
+	"encoding/json"
+	"fmt"
 )
 
 // GetSystemPrompt provides strict directions and schema for JSON output.
 func GetSystemPrompt() string {
-    return `You are a senior application security analyst. You must produce one valid JSON object only (no markdown, no commentary) that follows the schema below. Do not include code fences.
+	return `You are a senior application security analyst. You must produce one valid JSON object only (no markdown, no commentary) that follows the schema below. Do not include code fences.
 
 Requirements:
 - Output must be a single JSON object.
@@ -34,52 +34,52 @@ Schema (example with empty values):
 
 // GetUserPrompt builds a compact user message around a file URL.
 func GetUserPrompt(fileURL string) string {
-    return fmt.Sprintf("Analyze the file at this URL and respond with the JSON per schema. URL: %s", fileURL)
+	return fmt.Sprintf("Analyze the file at this URL and respond with the JSON per schema. URL: %s", fileURL)
 }
 
 // Suggestion is a sample structure that matches the schema used by the system prompt.
 type Suggestion struct {
-    FileURL string `json:"file_url"`
-    Counts  struct {
-        Critical int `json:"critical"`
-        High     int `json:"high"`
-        Medium   int `json:"medium"`
-        Low      int `json:"low"`
-        Total    int `json:"total"`
-    } `json:"counts"`
-    Findings []struct {
-        Title          string `json:"title"`
-        Severity       string `json:"severity"`
-        Summary        string `json:"summary"`
-        Recommendation string `json:"recommendation"`
-    } `json:"findings"`
-    Advice string `json:"advice"`
+	FileURL string `json:"file_url"`
+	Counts  struct {
+		Critical int `json:"critical"`
+		High     int `json:"high"`
+		Medium   int `json:"medium"`
+		Low      int `json:"low"`
+		Total    int `json:"total"`
+	} `json:"counts"`
+	Findings []struct {
+		Title          string `json:"title"`
+		Severity       string `json:"severity"`
+		Summary        string `json:"summary"`
+		Recommendation string `json:"recommendation"`
+	} `json:"findings"`
+	Advice string `json:"advice"`
 }
 
 // AnalyzeFromMinioURL returns a mock JSON following the schema. Replace with real logic as needed.
 func AnalyzeFromMinioURL(url string) (string, error) {
-    sample := Suggestion{
-        FileURL: url,
-        Advice:  "Review repository secrets management and enable CI scanning.",
-    }
-    // Example: one high severity finding
-    sample.Counts.High = 1
-    sample.Counts.Total = sample.Counts.Critical + sample.Counts.High + sample.Counts.Medium + sample.Counts.Low
-    sample.Findings = append(sample.Findings, struct {
-        Title          string `json:"title"`
-        Severity       string `json:"severity"`
-        Summary        string `json:"summary"`
-        Recommendation string `json:"recommendation"`
-    }{
-        Title:          "Potential hardcoded credentials",
-        Severity:       "high",
-        Summary:        "The file name or path suggests secrets might be embedded.",
-        Recommendation: "Use environment variables or secret managers; rotate any exposed keys.",
-    })
+	sample := Suggestion{
+		FileURL: url,
+		Advice:  "Review repository secrets management and enable CI scanning.",
+	}
+	// Example: one high severity finding
+	sample.Counts.High = 1
+	sample.Counts.Total = sample.Counts.Critical + sample.Counts.High + sample.Counts.Medium + sample.Counts.Low
+	sample.Findings = append(sample.Findings, struct {
+		Title          string `json:"title"`
+		Severity       string `json:"severity"`
+		Summary        string `json:"summary"`
+		Recommendation string `json:"recommendation"`
+	}{
+		Title:          "Potential hardcoded credentials",
+		Severity:       "high",
+		Summary:        "The file name or path suggests secrets might be embedded.",
+		Recommendation: "Use environment variables or secret managers; rotate any exposed keys.",
+	})
 
-    b, err := json.Marshal(sample)
-    if err != nil {
-        return "", fmt.Errorf("failed to marshal suggestion: %w", err)
-    }
-    return string(b), nil
+	b, err := json.Marshal(sample)
+	if err != nil {
+		return "", fmt.Errorf("failed to marshal suggestion: %w", err)
+	}
+	return string(b), nil
 }

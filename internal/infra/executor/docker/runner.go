@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -14,14 +15,19 @@ import (
 // findingsExitCode maps a tool to the exit code it uses to mean "ran fine, and
 // I found something". Any other non-zero code is a real failure.
 var findingsExitCode = map[domain.Tool]int{
-	domain.ToolTrivy:  1,
-	domain.ToolZAP:    2,
-	domain.ToolNuclei: 1,
+	domain.ToolTrivy:      1,
+	domain.ToolZAP:        2,
+	domain.ToolNuclei:     1,
+	domain.ToolSemgrep:    1,
+	domain.ToolOSVScanner: 1,
 }
 
 type Runner struct {
 	policy  domain.TargetPolicy
 	tempDir string
+
+	versionsOnce sync.Once
+	versions     map[string]ToolVersion
 }
 
 func NewRunner(policy domain.TargetPolicy) *Runner {
@@ -108,6 +114,40 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 			"-quickprogress",
 			"-newsession", sessionPath,
 		)
+	case domain.ToolSemgrep:
+		artifactPath += ".json"
+		source, err := r.policy.ValidatePath(req.Path)
+		if err != nil {
+			return domain.RunResult{}, err
+		}
+		cmd = exec.CommandContext(ctx,
+			"semgrep", "scan",
+			"--config", "auto",
+			"--json", "--output", artifactPath,
+			// --error makes the exit code deterministic: 1 means findings,
+			// anything else non-zero is a real failure. Without it the exit
+			// code depends on the semgrep version.
+			"--error",
+			"--quiet",
+			"--disable-version-check",
+			"--metrics", "off",
+			source,
+		)
+
+	case domain.ToolOSVScanner:
+		artifactPath += ".json"
+		source, err := r.policy.ValidatePath(req.Path)
+		if err != nil {
+			return domain.RunResult{}, err
+		}
+		cmd = exec.CommandContext(ctx,
+			"osv-scanner", "scan",
+			"--format", "json",
+			"--output", artifactPath,
+			"--recursive",
+			source,
+		)
+
 	case domain.ToolNuclei:
 		artifactPath += ".jsonl"
 		cmd = exec.CommandContext(ctx,

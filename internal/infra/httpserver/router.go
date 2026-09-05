@@ -21,6 +21,7 @@ import (
 	anldom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
 	serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
+	runner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
 	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
@@ -42,26 +43,46 @@ type Deps struct {
 	CORSOrigins []string
 	// DBHealth backs GET /healthz. Nil omits that endpoint.
 	DBHealth *middleware.DatabaseHealthChecker
+	// Build identifies this binary. Reported by GET /version.
+	Build BuildInfo
+	// ToolVersions reports the scanners present in this image. Nil omits the
+	// tools section of GET /version.
+	ToolVersions ToolVersionsFunc
 	// RateLimitBurst and RateLimitPerMinute bound requests per tenant+IP.
 	RateLimitBurst     int
 	RateLimitPerMinute int
 }
 
+// BuildInfo describes the running binary. Values are injected at build time
+// with -ldflags -X.
+type BuildInfo struct {
+	Version string `json:"version"`
+	Commit  string `json:"commit,omitempty"`
+	Built   string `json:"built,omitempty"`
+}
+
+// ToolVersionsFunc reports the scanner versions installed alongside the API.
+type ToolVersionsFunc func(ctx context.Context) map[string]runner.ToolVersion
+
 type Router struct {
-	scansSvc *appscans.Service
-	aiSvc    *appai.Service
-	serrRepo serrdom.Repository
-	pool     *application.Pool
-	policy   domain.TargetPolicy
+	scansSvc     *appscans.Service
+	aiSvc        *appai.Service
+	serrRepo     serrdom.Repository
+	pool         *application.Pool
+	policy       domain.TargetPolicy
+	build        BuildInfo
+	toolVersions ToolVersionsFunc
 }
 
 func NewRouter(deps Deps) http.Handler {
 	r := &Router{
-		scansSvc: deps.ScansSvc,
-		aiSvc:    deps.AISvc,
-		serrRepo: deps.ScanErrs,
-		pool:     deps.Pool,
-		policy:   deps.Policy,
+		scansSvc:     deps.ScansSvc,
+		aiSvc:        deps.AISvc,
+		serrRepo:     deps.ScanErrs,
+		pool:         deps.Pool,
+		policy:       deps.Policy,
+		build:        deps.Build,
+		toolVersions: deps.ToolVersions,
 	}
 	mux := chi.NewRouter()
 
@@ -93,6 +114,7 @@ func NewRouter(deps Deps) http.Handler {
 	mux.Get("/health", middleware.LivenessHandler)
 	mux.Get("/ready", middleware.ReadinessHandler)
 	mux.Get("/metrics", middleware.MetricsHandler)
+	mux.Get("/version", r.handleVersion)
 	if deps.DBHealth != nil {
 		mux.Get("/healthz", middleware.HealthHandler(map[string]middleware.HealthChecker{
 			"database": deps.DBHealth,
@@ -139,6 +161,21 @@ func NewRouter(deps Deps) http.Handler {
 	})
 
 	return mux
+}
+
+// GET /version
+//
+// Reports the running binary and the scanners actually installed beside it.
+// The tool versions are probed from the binaries rather than read from the
+// Dockerfile's build arguments, so they cannot drift from reality — a tool the
+// runner knows about but the image does not ship shows up as unavailable.
+func (r *Router) handleVersion(w http.ResponseWriter, req *http.Request) {
+	resp := map[string]any{"app": r.build}
+	if r.toolVersions != nil {
+		resp["tools"] = r.toolVersions(req.Context())
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
 }
 
 // requireValidTenant rejects a malformed tenant segment before it reaches a
@@ -332,7 +369,12 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 		return errBadRequest(fmt.Errorf("invalid JSON body: %w", err))
 	}
 
+	// The id is minted here so the caller gets it in the 202 and can poll for
+	// the result. Without it a client has no handle on the scan it started.
+	scanID := appscans.NewScanID(body.Tool)
+
 	cmd := appscans.TriggerScanCommand{
+		ScanID:    scanID,
 		TenantID:  tenant,
 		Tool:      body.Tool,
 		Mode:      body.Mode,
@@ -376,6 +418,7 @@ func (r *Router) handleTriggerScan(w http.ResponseWriter, req *http.Request) err
 	resp := map[string]any{
 		"status":   "queued",
 		"tenant":   tenant,
+		"scan_id":  scanID,
 		"tool":     body.Tool,
 		"branch":   body.Branch,
 		"commit":   body.CommitSHA,

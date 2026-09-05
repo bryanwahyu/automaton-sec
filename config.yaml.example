@@ -76,6 +76,6 @@ scanner:
   # Optional target allowlist. Entries are an exact host ("example.com") or a
   # domain suffix (".example.com"). Empty means any public host.
   allowedHosts: []
-  # Directory that gitleaks paths must stay inside. Empty disables filesystem
-  # scans entirely.
+  # Directory that filesystem scans (gitleaks, semgrep, osv-scanner) must stay
+  # inside. Empty disables those tools entirely.
   workspaceRoot: ""

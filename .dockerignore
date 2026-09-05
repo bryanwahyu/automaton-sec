@@ -14,5 +14,8 @@ node_modules
 dist
 bin
 
+# Local notes and design docs. Gitignored, and no business in a build context.
+docs
+
 # Docker
 docker-compose.yml

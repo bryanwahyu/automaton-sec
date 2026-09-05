@@ -4,7 +4,7 @@
 # Builds the API and osv-scanner from source, so the final image never needs a
 # Go toolchain and we never have to guess a release asset's filename.
 # =============================================================================
-FROM golang:1.24-bookworm AS gobuild
+FROM golang:1.25-bookworm AS gobuild
 
 ARG OSV_SCANNER_VERSION=v1.9.2
 

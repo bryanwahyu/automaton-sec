@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
 	"time"
 
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -24,6 +25,9 @@ var findingsExitCode = map[domain.Tool]int{
 type Runner struct {
 	policy  domain.TargetPolicy
 	tempDir string
+
+	versionsOnce sync.Once
+	versions     map[string]ToolVersion
 }
 
 func NewRunner(policy domain.TargetPolicy) *Runner {

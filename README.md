@@ -207,6 +207,7 @@ and scans are only ever read back under the tenant that created them.
 | `GET` | `/ready` | Readiness probe. No credential. |
 | `GET` | `/metrics` | Request, scan, error, memory, and goroutine counters. No credential. |
 | `GET` | `/healthz` | Detailed health including database connectivity. No credential. |
+| `GET` | `/version` | Build version plus the scanner versions actually installed. No credential. |
 | `POST` | `/v1/{tenant}/webhook/security-scan` | Queue a scan |
 | `POST` | `/v1/{tenant}/scans/{id}/retry` | Re-run a scan |
 | `GET` | `/v1/{tenant}/scans` | Paginated list |
@@ -454,7 +455,30 @@ go build -o security-api ./cmd/api
 docker build -t security-api:latest .
 
 # Pin a different scanner version
-docker build --build-arg TRIVY_VERSION=0.66.0 -t security-api:latest .
+docker build --build-arg TRIVY_VERSION=0.74.0 -t security-api:latest .
+
+# Stamp a version into the binary (what the release workflow does)
+docker build \
+  --build-arg VERSION=v1.2.3 \
+  --build-arg COMMIT=$(git rev-parse --short HEAD) \
+  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
+  -t security-api:v1.2.3 .
+```
+
+### Releasing
+
+Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds
+`linux/amd64` and `linux/arm64`, pushes to Docker Hub as
+`<user>/automaton-sec:<version>`, `:<major>.<minor>`, and `:latest`, and opens a
+GitHub release with generated notes.
+
+It needs two repository secrets — `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
+(a Docker Hub access token, not the account password). Without them the job
+warns and skips the push rather than failing.
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
 ```
 
 The image builds in three stages: a Go stage that compiles the API and
@@ -510,15 +534,30 @@ usable artifact.
 ## 🔐 Security Tools Versions
 
 Pinned as build arguments in the Dockerfile, so they can be bumped without
-editing a `RUN` line:
+editing a `RUN` line. `GET /version` reports what is actually installed by
+probing the binaries, so the list below cannot drift silently:
 
-- Trivy: v0.65.0 (`TRIVY_VERSION`)
+```json
+{
+  "app": {"version": "v1.2.3", "commit": "abc1234", "built": "2026-09-05T10:00:00Z"},
+  "tools": {
+    "trivy": {"version": "Version: 0.74.0", "available": true},
+    "sqlmap": {"available": false, "error": "not installed"}
+  }
+}
+```
+
+- Trivy: v0.74.0 (`TRIVY_VERSION`)
 - Nuclei: v3.3.5 (`NUCLEI_VERSION`)
 - Gitleaks: v8.18.1 (`GITLEAKS_VERSION`)
 - Semgrep: 1.86.0 (`SEMGREP_VERSION`)
 - osv-scanner: v1.9.2 (`OSV_SCANNER_VERSION`)
 - ZAP: v2.16.1 (`ZAP_VERSION`)
-- SQLMap: not currently installed in the image
+- SQLMap: **not currently installed in the image**, though the runner will
+  dispatch to it. `GET /version` reports it as unavailable.
+
+Trivy was previously pinned to v0.65.0, which was never published — both the
+GitHub API and the download URL return 404 for it, so the image could not build.
 
 ## 🤝 Contributing
 

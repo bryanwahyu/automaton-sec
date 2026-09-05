@@ -8,12 +8,22 @@ FROM golang:1.24-bookworm AS gobuild
 
 ARG OSV_SCANNER_VERSION=v1.9.2
 
+# Stamped into the binary and reported by GET /version.
+ARG VERSION=dev
+ARG COMMIT=""
+ARG BUILD_DATE=""
+
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/security-api ./cmd/api
+RUN CGO_ENABLED=0 go build -trimpath \
+      -ldflags="-s -w \
+        -X main.version=${VERSION} \
+        -X main.commit=${COMMIT} \
+        -X main.buildDate=${BUILD_DATE}" \
+      -o /out/security-api ./cmd/api
 RUN CGO_ENABLED=0 GOBIN=/out go install \
       github.com/google/osv-scanner/cmd/osv-scanner@${OSV_SCANNER_VERSION}
 
@@ -26,7 +36,7 @@ RUN CGO_ENABLED=0 GOBIN=/out go install \
 FROM debian:bookworm-slim AS fetch
 
 ARG GITLEAKS_VERSION=8.18.1
-ARG TRIVY_VERSION=0.65.0
+ARG TRIVY_VERSION=0.74.0
 ARG NUCLEI_VERSION=3.3.5
 ARG ZAP_VERSION=2.16.1
 

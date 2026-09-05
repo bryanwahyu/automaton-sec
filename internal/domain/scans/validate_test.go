@@ -126,3 +126,30 @@ func TestToolValid(t *testing.T) {
 		t.Error("nmap is not a supported tool")
 	}
 }
+
+func TestFilesystemToolsValidateThePath(t *testing.T) {
+	root := t.TempDir()
+	p := TargetPolicy{WorkspaceRoot: root}
+
+	for _, tool := range []Tool{ToolGitleaks, ToolSemgrep, ToolOSVScanner} {
+		if !tool.ScansFilesystem() {
+			t.Fatalf("%q should be a filesystem tool", tool)
+		}
+		if err := p.ValidateRunRequest(RunRequest{Tool: tool, Path: "repo"}); err != nil {
+			t.Errorf("%q with a path inside the root: %v", tool, err)
+		}
+		// A target is irrelevant to these tools and must not rescue a bad path.
+		if err := p.ValidateRunRequest(RunRequest{Tool: tool, Target: "https://example.com"}); err == nil {
+			t.Errorf("%q without a path should be rejected", tool)
+		}
+		if err := p.ValidateRunRequest(RunRequest{Tool: tool, Path: "../escape"}); err == nil {
+			t.Errorf("%q should reject a path escaping the workspace root", tool)
+		}
+	}
+
+	for _, tool := range []Tool{ToolTrivy, ToolNuclei, ToolZAP, ToolSQLMap} {
+		if tool.ScansFilesystem() {
+			t.Errorf("%q is not a filesystem tool", tool)
+		}
+	}
+}

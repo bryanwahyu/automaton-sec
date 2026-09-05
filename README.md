@@ -5,11 +5,19 @@ A comprehensive Go-based security scanning platform with multiple security tools
 ## 🚀 Features
 
 ### Security Scanning Tools
-- **Trivy** - Container image vulnerability, secret, and misconfiguration scanning
-- **Nuclei** - Fast and customizable vulnerability scanner
-- **Gitleaks** - Git repository secret scanning
-- **ZAP (OWASP ZAP)** - Web application security scanner
-- **SQLMap** - SQL injection detection and exploitation
+
+| Tool | Scans | Input |
+| --- | --- | --- |
+| **Trivy** | Container image vulnerabilities, secrets, misconfiguration | `image` |
+| **Nuclei** | Known CVEs, exposed panels, misconfiguration | `target` |
+| **Gitleaks** | Secrets in a repository's history | `path` |
+| **Semgrep** | Vulnerable patterns in source code (SAST) | `path` |
+| **osv-scanner** | Lockfile dependencies against the OSV database | `path` |
+| **ZAP (OWASP ZAP)** | Web application security | `target` |
+| **SQLMap** | SQL injection | `target` |
+
+The three `path` tools all resolve their input inside `scanner.workspaceRoot`;
+filesystem scans are refused outright when that is unset.
 
 ### Core Features
 - RESTful API with offset and cursor pagination, plus filtering
@@ -218,10 +226,11 @@ Content-Type: application/json
 X-Signature: <hex HMAC-SHA256 of the body>
 
 {
-  "tool": "trivy",              // trivy | nuclei | gitleaks | zap | sqlmap
+  "tool": "trivy",              // trivy | nuclei | gitleaks | semgrep | osv-scanner | zap | sqlmap
   "image": "nginx:latest",      // trivy
   "target": "https://example.com", // nuclei | zap | sqlmap
-  "path": "/workspace/repo",    // gitleaks, must sit under scanner.workspaceRoot
+  "path": "/workspace/repo",    // gitleaks | semgrep | osv-scanner,
+                                // must sit under scanner.workspaceRoot
   "mode": "image",              // optional, free-form
   "source": "github-actions",   // optional
   "commit_sha": "abc123",       // optional
@@ -369,6 +378,27 @@ scan '{"tool":"gitleaks","path":"/workspace/repo"}'
 Finds API keys, passwords, private keys, and tokens. The path must resolve
 inside `scanner.workspaceRoot`; filesystem scans are refused when that is unset.
 
+### Semgrep — static analysis of source code
+
+```bash
+scan '{"tool":"semgrep","path":"/app/workspace/repo"}'
+```
+
+Runs `--config auto`, so it pulls the registry rulesets matching the languages
+it finds. Severity comes from the rule's triaged rating where it has one, and
+from its ERROR/WARNING/INFO level otherwise.
+
+### osv-scanner — dependency vulnerabilities
+
+```bash
+scan '{"tool":"osv-scanner","path":"/app/workspace/repo"}'
+```
+
+Walks lockfiles recursively (`package-lock.json`, `go.sum`, `requirements.txt`,
+`Gemfile.lock`, and the rest) and resolves each dependency against the OSV
+database. Complements Trivy: Trivy scans a built image, osv-scanner scans the
+source it was built from.
+
 ### ZAP — web app security
 
 ```bash
@@ -422,7 +452,15 @@ go build -o security-api ./cmd/api
 
 # Docker build
 docker build -t security-api:latest .
+
+# Pin a different scanner version
+docker build --build-arg TRIVY_VERSION=0.66.0 -t security-api:latest .
 ```
+
+The image builds in three stages: a Go stage that compiles the API and
+osv-scanner, a fetch stage that downloads the third-party scanners, and a JRE
+runtime that receives only the resulting binaries. `wget`, `unzip`, the
+tarballs, and the Go toolchain never reach the final image.
 
 ### Database Migrations
 ```bash
@@ -471,43 +509,27 @@ usable artifact.
 
 ## 🔐 Security Tools Versions
 
-- Trivy: v0.65.0
-- Nuclei: v3.3.5
-- Gitleaks: v8.18.1
-- ZAP: v2.16.1
-- SQLMap: Latest
+Pinned as build arguments in the Dockerfile, so they can be bumped without
+editing a `RUN` line:
+
+- Trivy: v0.65.0 (`TRIVY_VERSION`)
+- Nuclei: v3.3.5 (`NUCLEI_VERSION`)
+- Gitleaks: v8.18.1 (`GITLEAKS_VERSION`)
+- Semgrep: 1.86.0 (`SEMGREP_VERSION`)
+- osv-scanner: v1.9.2 (`OSV_SCANNER_VERSION`)
+- ZAP: v2.16.1 (`ZAP_VERSION`)
+- SQLMap: not currently installed in the image
 
 ## 🤝 Contributing
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the
+five files a new scanner touches. Security vulnerabilities go through
+[private advisories](https://github.com/bryanwahyu/automaton-sec/security/advisories/new),
+not public issues — see [SECURITY.md](SECURITY.md).
 
 ## 📝 License
 
-MIT License
-
-Copyright (c) 2025 Bryan Wahyu
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
+MIT — see [LICENSE](LICENSE). Copyright (c) 2025 Bryan Wahyu.
 
 ## 🙏 Acknowledgments
 

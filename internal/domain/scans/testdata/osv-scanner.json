@@ -1,0 +1,574 @@
+{
+ "results": [
+  {
+   "source": {
+    "path": "/Users/macbookpro/puublic-repo/security-api/go.mod",
+    "type": "lockfile"
+   },
+   "packages": [
+    {
+     "package": {
+      "name": "filippo.io/edwards25519",
+      "version": "1.1.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GHSA-fw7p-63qq-7hpr",
+       "database_specific": {
+        "severity": "LOW"
+       }
+      },
+      {
+       "id": "GO-2026-4503",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-4503",
+        "GHSA-fw7p-63qq-7hpr"
+       ],
+       "max_severity": "1.7"
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "github.com/go-chi/chi/v5",
+      "version": "5.2.2",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GHSA-mqqf-5wvp-8fh8",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GO-2026-4316",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5774",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5775",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5777",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-4316",
+        "GHSA-mqqf-5wvp-8fh8"
+       ],
+       "max_severity": "4.7"
+      },
+      {
+       "ids": [
+        "GO-2026-5774"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5775"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5777"
+       ],
+       "max_severity": ""
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "github.com/klauspost/compress",
+      "version": "1.18.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GO-2026-5841",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-5841"
+       ],
+       "max_severity": ""
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "golang.org/x/crypto",
+      "version": "0.39.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GHSA-45gg-vh54-h5m9",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-5cgq-3rg8-m6cv",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-78mq-xcr3-xm33",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-89gr-r52h-f8rx",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-9m57-25v3-79x9",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-f5wc-c3c7-36mc",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-f6x5-jh6r-wrfv",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-j5w8-q4qc-rx2x",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-jppx-rxg9-jmrx",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-q4h4-gmj2-qvw2",
+       "database_specific": {
+        "severity": "HIGH"
+       }
+      },
+      {
+       "id": "GHSA-qpw4-5x99-6vjp",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GHSA-rm3j-f69w-wqmq",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-vgwf-h737-ff37",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GHSA-w879-237q-wc7r",
+       "database_specific": {
+        "severity": "HIGH"
+       }
+      },
+      {
+       "id": "GHSA-x527-x647-q7gg",
+       "database_specific": {
+        "severity": "CRITICAL"
+       }
+      },
+      {
+       "id": "GO-2025-4116",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2025-4134",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2025-4135",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5005",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5006",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5013",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5014",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5015",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5016",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5017",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5018",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5019",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5020",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5021",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5023",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5033",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5932",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-6303",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-6354",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-6355",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-5014",
+        "GHSA-45gg-vh54-h5m9"
+       ],
+       "max_severity": "6.3"
+      },
+      {
+       "ids": [
+        "GO-2026-5021",
+        "GHSA-5cgq-3rg8-m6cv"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2026-5015",
+        "GHSA-78mq-xcr3-xm33"
+       ],
+       "max_severity": "5.3"
+      },
+      {
+       "ids": [
+        "GO-2026-5019",
+        "GHSA-89gr-r52h-f8rx"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2026-5033",
+        "GHSA-9m57-25v3-79x9"
+       ],
+       "max_severity": "5.3"
+      },
+      {
+       "ids": [
+        "GO-2026-5006",
+        "GHSA-f5wc-c3c7-36mc"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2025-4135",
+        "GHSA-f6x5-jh6r-wrfv"
+       ],
+       "max_severity": "5.3"
+      },
+      {
+       "ids": [
+        "GO-2025-4134",
+        "GHSA-j5w8-q4qc-rx2x"
+       ],
+       "max_severity": "5.3"
+      },
+      {
+       "ids": [
+        "GO-2026-5005",
+        "GHSA-jppx-rxg9-jmrx"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2026-5013",
+        "GHSA-q4h4-gmj2-qvw2"
+       ],
+       "max_severity": "7.5"
+      },
+      {
+       "ids": [
+        "GO-2026-5016",
+        "GHSA-qpw4-5x99-6vjp"
+       ],
+       "max_severity": "6.5"
+      },
+      {
+       "ids": [
+        "GO-2026-5020",
+        "GHSA-rm3j-f69w-wqmq"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2026-5017",
+        "GHSA-vgwf-h737-ff37"
+       ],
+       "max_severity": "9.1"
+      },
+      {
+       "ids": [
+        "GO-2026-5018",
+        "GHSA-w879-237q-wc7r"
+       ],
+       "max_severity": "7.5"
+      },
+      {
+       "ids": [
+        "GO-2026-5023",
+        "GHSA-x527-x647-q7gg"
+       ],
+       "max_severity": "10.0"
+      },
+      {
+       "ids": [
+        "GO-2025-4116"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5932"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-6303"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-6354"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-6355"
+       ],
+       "max_severity": ""
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "golang.org/x/net",
+      "version": "0.41.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GHSA-5cv4-jp36-h3mw",
+       "database_specific": {
+        "severity": "MODERATE"
+       }
+      },
+      {
+       "id": "GO-2026-4440",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-4441",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-4918",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5025",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5026",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5027",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5028",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5029",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5030",
+       "database_specific": {}
+      },
+      {
+       "id": "GO-2026-5942",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-5028",
+        "GHSA-5cv4-jp36-h3mw"
+       ],
+       "max_severity": "6.5"
+      },
+      {
+       "ids": [
+        "GO-2026-4440"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-4441"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-4918"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5025"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5026"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5027"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5029"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5030"
+       ],
+       "max_severity": ""
+      },
+      {
+       "ids": [
+        "GO-2026-5942"
+       ],
+       "max_severity": ""
+      }
+     ]
+    },
+    {
+     "package": {
+      "name": "golang.org/x/sys",
+      "version": "0.33.0",
+      "ecosystem": "Go"
+     },
+     "vulnerabilities": [
+      {
+       "id": "GO-2026-5024",
+       "database_specific": {}
+      }
+     ],
+     "groups": [
+      {
+       "ids": [
+        "GO-2026-5024"
+       ],
+       "max_severity": ""
+      }
+     ]
+    }
+   ]
+  }
+ ]
+}

@@ -16,10 +16,27 @@ const (
 	ToolGitleaks Tool = "gitleaks"
 	ToolZAP      Tool = "zap"
 	ToolNuclei   Tool = "nuclei"
+	// ToolSemgrep runs static analysis over source code.
+	ToolSemgrep Tool = "semgrep"
+	// ToolOSVScanner resolves lockfile dependencies against the OSV database.
+	ToolOSVScanner Tool = "osv-scanner"
 )
 
 // KnownTools lists every tool the runner can dispatch.
-var KnownTools = []Tool{ToolSQLMap, ToolTrivy, ToolGitleaks, ToolZAP, ToolNuclei}
+var KnownTools = []Tool{
+	ToolSQLMap, ToolTrivy, ToolGitleaks, ToolZAP, ToolNuclei,
+	ToolSemgrep, ToolOSVScanner,
+}
+
+// ScansFilesystem reports whether the tool reads a local path rather than a
+// URL or an image reference.
+func (t Tool) ScansFilesystem() bool {
+	switch t {
+	case ToolGitleaks, ToolSemgrep, ToolOSVScanner:
+		return true
+	}
+	return false
+}
 
 // Valid reports whether t is a tool the runner knows how to execute.
 func (t Tool) Valid() bool {

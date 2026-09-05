@@ -29,6 +29,14 @@ import (
 	"github.com/bryanwahyu/automaton-sec/internal/middleware"
 )
 
+// Build information, injected with -ldflags -X at build time and reported by
+// GET /version. The defaults are what a plain `go build` produces.
+var (
+	version   = "dev"
+	commit    = ""
+	buildDate = ""
+)
+
 func main() {
 	// path config.yaml
 	path := "config.yaml"
@@ -45,6 +53,8 @@ func main() {
 		log.Printf("WARNING: auth.disabled is true — every endpoint is open. " +
 			"Do not run this way outside local development.")
 	}
+
+	log.Printf("automaton-sec %s (commit=%s built=%s)", version, orNone(commit), orNone(buildDate))
 
 	ctx := context.Background()
 
@@ -141,6 +151,12 @@ func main() {
 			WebhookHMACKey: []byte(cfg.Auth.WebhookHMACKey),
 			APIKeys:        cfg.Auth.APIKeys,
 		},
+		Build: httpserver.BuildInfo{
+			Version: version,
+			Commit:  commit,
+			Built:   buildDate,
+		},
+		ToolVersions:       runner.Versions,
 		CORSOrigins:        cfg.CORS.AllowedOrigins,
 		DBHealth:           &middleware.DatabaseHealthChecker{DB: db},
 		RateLimitBurst:     cfg.RateLimit.Burst,
@@ -188,4 +204,12 @@ func main() {
 			"their rows stay at status=running and can be retried", pool.InFlight())
 	}
 	log.Println("shutdown complete")
+}
+
+// orNone keeps an unstamped build readable in the startup log.
+func orNone(s string) string {
+	if s == "" {
+		return "none"
+	}
+	return s
 }

@@ -35,7 +35,7 @@ filesystem scans are refused outright when that is unset.
 ## 📋 Requirements
 
 - Docker & Docker Compose
-- Go 1.24+ (for local development)
+- Go 1.25+ (for local development)
 - MySQL 8.0+ or PostgreSQL 15+
 - MinIO or S3-compatible storage
 - OpenAI API key (optional, for AI analysis)

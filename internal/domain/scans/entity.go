@@ -11,20 +11,35 @@ type ScanID string
 type Tool string
 
 const (
-	ToolSQLMap   Tool= "sqlmap"
+	ToolSQLMap   Tool = "sqlmap"
 	ToolTrivy    Tool = "trivy"
 	ToolGitleaks Tool = "gitleaks"
 	ToolZAP      Tool = "zap"
 	ToolNuclei   Tool = "nuclei"
 )
 
+// KnownTools lists every tool the runner can dispatch.
+var KnownTools = []Tool{ToolSQLMap, ToolTrivy, ToolGitleaks, ToolZAP, ToolNuclei}
+
+// Valid reports whether t is a tool the runner knows how to execute.
+func (t Tool) Valid() bool {
+	for _, k := range KnownTools {
+		if t == k {
+			return true
+		}
+	}
+	return false
+}
+
 // Status enum
 type Status string
 
 const (
-    StatusSuccess Status = "success"
-    StatusFailed  Status = "failed"
-    StatusError   Status = "error"
+	StatusRunning     Status = "running"
+	StatusSuccess     Status = "success"
+	StatusFailed      Status = "failed"
+	StatusError       Status = "error"
+	StatusInterrupted Status = "interrupted"
 )
 
 // SeverityCounts value object

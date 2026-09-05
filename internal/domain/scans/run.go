@@ -1,6 +1,5 @@
 package scans
 
-
 // RunRequest untuk Runner
 type RunRequest struct {
 	Tool   Tool
@@ -15,6 +14,11 @@ type RunResult struct {
 	Counts            SeverityCounts
 	LocalArtifactPath string
 	RawFormat         string
-	ExitCode          int
-	DurationMS        int64
+	// ExitCode is the scanner process exit code, preserved for troubleshooting.
+	// It is NOT a success signal: several scanners exit non-zero purely to report
+	// that they found something. Use HasFindings/Failed instead.
+	ExitCode int
+	// HasFindings is true when the scanner exited non-zero only to signal findings.
+	HasFindings bool
+	DurationMS  int64
 }

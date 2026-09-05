@@ -11,21 +11,38 @@ import (
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
 )
 
-type Runner struct{}
+// findingsExitCode maps a tool to the exit code it uses to mean "ran fine, and
+// I found something". Any other non-zero code is a real failure.
+var findingsExitCode = map[domain.Tool]int{
+	domain.ToolTrivy:  1,
+	domain.ToolZAP:    2,
+	domain.ToolNuclei: 1,
+}
 
-func NewRunner() *Runner {
-	return &Runner{}
+type Runner struct {
+	policy  domain.TargetPolicy
+	tempDir string
+}
+
+func NewRunner(policy domain.TargetPolicy) *Runner {
+	return &Runner{policy: policy, tempDir: "./temp"}
 }
 
 func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResult, error) {
+	// Reject anything we would not want to hand to a scanner's argv before we
+	// build a command line out of it.
+	if err := r.policy.ValidateRunRequest(req); err != nil {
+		return domain.RunResult{}, fmt.Errorf("invalid scan request: %w", err)
+	}
+
 	start := time.Now()
 
 	// Pastikan temp dir ada
-	if err := os.MkdirAll("./temp", 0755); err != nil {
+	if err := os.MkdirAll(r.tempDir, 0o755); err != nil {
 		return domain.RunResult{}, fmt.Errorf("failed to create temp dir: %w", err)
 	}
 
-	artifactPath := filepath.Join("./temp", fmt.Sprintf("%s-%d", req.Tool, time.Now().UnixNano()))
+	artifactPath := filepath.Join(r.tempDir, fmt.Sprintf("%s-%d", req.Tool, time.Now().UnixNano()))
 	var cmd *exec.Cmd
 	rawFormat := "json"
 
@@ -52,9 +69,15 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 
 	case domain.ToolGitleaks:
 		artifactPath += ".json"
+		// ValidateRunRequest already confirmed the path resolves inside the
+		// workspace root; use the cleaned absolute form it returns.
+		source, err := r.policy.ValidatePath(req.Path)
+		if err != nil {
+			return domain.RunResult{}, err
+		}
 		cmd = exec.CommandContext(ctx,
 			"gitleaks", "detect",
-			"--source", req.Path,
+			"--source", source,
 			"--report-format", "json",
 			"--report-path", artifactPath,
 		)
@@ -103,16 +126,19 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 	duration := time.Since(start).Milliseconds()
 
 	exitCode := 0
+	hasFindings := false
 	if err != nil {
-		// Ambil exit code
+		// A cancelled or timed-out context is always a failure, whatever exit
+		// code the killed process happened to report.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return domain.RunResult{}, fmt.Errorf("run aborted: tool=%s: %w", req.Tool, ctxErr)
+		}
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			exitCode = exitErr.ExitCode()
 		}
-		// Trivy (1), ZAP (2), atau Nuclei (1) artinya ada finding, bukan gagal
-		if (req.Tool == domain.ToolTrivy && exitCode == 1) ||
-			(req.Tool == domain.ToolZAP && exitCode == 2) ||
-			(req.Tool == domain.ToolNuclei && exitCode == 1) {
-			// treat as success with findings
+		// Trivy (1), ZAP (2), dan Nuclei (1) artinya ada finding, bukan gagal.
+		if want, ok := findingsExitCode[req.Tool]; ok && exitCode == want {
+			hasFindings = true
 		} else {
 			return domain.RunResult{}, fmt.Errorf("run error: tool=%s exit=%d, err=%v, output=%s",
 				req.Tool, exitCode, err, string(out))
@@ -131,6 +157,7 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		LocalArtifactPath: artifactPath,
 		RawFormat:         rawFormat,
 		ExitCode:          exitCode,
+		HasFindings:       hasFindings,
 		DurationMS:        duration,
 	}, nil
 }

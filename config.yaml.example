@@ -1,0 +1,63 @@
+# Copy to config.yaml and fill in. config.yaml is gitignored.
+# Override the location with CONFIG_PATH=/path/to/config.yaml
+
+server:
+  port: 8000
+  # How long to wait for in-flight scans when the process is asked to stop.
+  shutdownGrace: 30s
+
+database:
+  type: mysql # mysql | postgres
+  host: localhost
+  port: 3306
+  user: root
+  password: change-me
+  name: security_db
+
+minio:
+  endpoint: localhost:9000 # host:port, no scheme
+  accessKey: change-me
+  secretKey: change-me
+  bucketName: security-scans
+  region: us-east-1
+  useSSL: false
+
+openai:
+  # Optional. Leave empty to disable AI analysis.
+  apiKey: ""
+  model: gpt-4.1-mini
+
+# Required. Without at least one credential the server refuses to start —
+# a scanning API that anyone can drive is an open relay for scanning others.
+auth:
+  # Shared secret for POST /v1/{tenant}/webhook/security-scan. Callers send
+  # X-Signature: <hex HMAC-SHA256 of the raw request body>.
+  webhookHmacKey: change-me-to-a-long-random-string
+  # Accepted on read routes as "Authorization: Bearer <key>".
+  apiKeys:
+    - change-me-to-another-long-random-string
+  # Local development escape hatch. Leaves every endpoint open; the server
+  # logs a warning on each startup while it is on.
+  disabled: false
+
+cors:
+  # Browser origins allowed to call the API. Empty means none.
+  allowedOrigins: []
+  # allowedOrigins:
+  #   - https://dashboard.example.com
+
+scanner:
+  # Scanners are memory-heavy; this caps how many run at once. Extra requests
+  # get 429 rather than queueing invisibly.
+  maxConcurrent: 2
+  # Hard ceiling on a single scan.
+  timeout: 30m
+  # Off by default. Turning it on lets callers scan loopback, link-local and
+  # private addresses — including cloud metadata endpoints.
+  allowPrivateTargets: false
+  # Optional target allowlist. Entries are an exact host ("example.com") or a
+  # domain suffix (".example.com"). Empty means any public host.
+  allowedHosts: []
+  # Directory that gitleaks paths must stay inside. Empty disables filesystem
+  # scans entirely.
+  workspaceRoot: ""

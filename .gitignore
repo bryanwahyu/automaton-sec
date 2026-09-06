@@ -4,5 +4,5 @@ config.yaml
 *.log
 *.sqlite
 *.db
-/vendor
+/vendor  
 /docs

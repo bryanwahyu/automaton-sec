@@ -416,7 +416,9 @@ there is nothing stable to sign. CI systems that already sign their payloads
 keep using `POST /v1/{tenant}/webhook/security-scan` over HTTP.
 
 `grpc.health.v1.Health` is served without a credential, matching `GET /health`.
-Everything else — reflection included — needs the key.
+Everything else needs the key, reflection included — not to keep the schema
+secret, since the proto is published here, but so one rule covers everything a
+client can reach.
 
 ### Error codes
 

@@ -9,6 +9,8 @@ services:
     ports:
       # Host port changed to avoid conflict with macOS ControlCenter using 5000
       - "5002:5000"
+      # gRPC API
+      - "9002:9000"
     volumes:
       - ./config.yaml:/app/config.yaml:ro
       - ./temp:/app/temp   # folder sementara untuk artifacts
@@ -38,6 +40,8 @@ services:
       PG_SSLMODE: disable
     ports:
       - "5001:5000"
+      # gRPC API
+      - "9001:9000"
     volumes:
       - ./config.postgres.yaml:/app/config.postgres.yaml:ro
       - ./temp:/app/temp

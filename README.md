@@ -21,6 +21,8 @@ filesystem scans are refused outright when that is unset.
 
 ### Core Features
 - RESTful API with offset and cursor pagination, plus filtering
+- gRPC API on a second port with a server-streaming `WatchScan`, so clients stop
+  polling, plus a typed Go SDK
 - HMAC-signed webhooks and bearer-key reads; nothing but `/health` is open
 - Target policy that refuses argument-shaped input and private/link-local hosts
 - Bounded scanner pool with per-scan timeouts; a full pool answers `429`
@@ -58,9 +60,16 @@ security-api/
 │   │   ├── ai/          # OpenAI client
 │   │   ├── db/          # Database repositories
 │   │   ├── executor/    # Security tool executors
+│   │   ├── grpcserver/  # gRPC services and interceptors
 │   │   ├── httpserver/  # HTTP routes and handlers
 │   │   └── storage/     # MinIO/S3 storage
+│   ├── apierr/          # Error classification shared by both surfaces
 │   └── config/          # Configuration management
+├── proto/               # The gRPC contract
+├── gen/go/              # Generated stubs, committed
+├── pkg/sdk/             # Go client for the gRPC API
+├── buf.yaml             # buf lint and breaking-change rules
+├── buf.gen.yaml         # Codegen plugins
 ├── Dockerfile           # Multi-stage build
 ├── docker-compose.yml   # Service orchestration
 └── config.yaml.example  # Template for config.yaml
@@ -86,8 +95,8 @@ docker compose up --build -d
 docker compose logs -f security-api
 
 # 5. Access API
-# MySQL variant: http://localhost:5002
-# PostgreSQL variant: http://localhost:5001
+# MySQL variant:      REST http://localhost:5002   gRPC localhost:9002
+# PostgreSQL variant: REST http://localhost:5001   gRPC localhost:9001
 ```
 
 ### Option 2: Local Development
@@ -121,6 +130,7 @@ supplies enough.
 ```yaml
 server:
   port: 5000
+  grpcPort: 9000          # gRPC API; negative disables the listener
   shutdownGrace: 30s      # how long to wait for in-flight scans on SIGTERM
 
 database:
@@ -176,6 +186,7 @@ Every route except `GET /health` requires a credential.
 | `POST /v1/{tenant}/webhook/security-scan` | `X-Signature: <hex HMAC-SHA256 of the raw body>`, keyed with `auth.webhookHmacKey` |
 | Everything else under `/v1/{tenant}` | `Authorization: Bearer <key>` from `auth.apiKeys` |
 | `GET /health`, `/ready`, `/metrics`, `/healthz` | none |
+| gRPC, every RPC except health | `authorization: Bearer <key>` metadata |
 
 All `/v1` routes are additionally rate limited per tenant+IP (`rateLimit.burst`,
 `rateLimit.perMinute`); probe and metrics endpoints are exempt. A malformed
@@ -197,6 +208,9 @@ curl -X POST http://localhost:5002/v1/acme/webhook/security-scan \
 ```
 
 ## 📡 API Endpoints
+
+These are the REST endpoints. The same use cases are also served over gRPC —
+see [gRPC API](#-grpc-api).
 
 Every path is tenant-scoped: `{tenant}` is an arbitrary identifier you choose,
 and scans are only ever read back under the tenant that created them.
@@ -337,6 +351,220 @@ Content-Type: application/json
 Returns `202` with an `analysis_id`. Read results with
 `GET /v1/{tenant}/ai/analyze?page=1&page_size=20`, or fetch a scan with
 `GET /v1/{tenant}/scans/{id}?with=analysis`.
+
+## 🔌 gRPC API
+
+The same use cases are served over gRPC on `server.grpcPort` (default `9000`),
+beside the REST API. Both surfaces call the same services, submit to the same
+scanner pool, and classify errors through the same code, so they cannot answer
+differently.
+
+The contract is [`proto/automaton/sec/v1/scan.proto`](proto/automaton/sec/v1/scan.proto).
+Generated Go code is committed under `gen/go`, so nothing downstream needs
+`protoc`.
+
+> **Port note:** MinIO's default port is also 9000. If you run MinIO on the same
+> host outside Docker, set `server.grpcPort` (or `SERVER_GRPC_PORT`) to
+> something else.
+
+### Why gRPC as well as REST
+
+The scan API is asynchronous: the REST caller gets `202` and then polls
+`GET /v1/{tenant}/scans/{id}` until the status stops being `running`. Every
+client reimplemented that loop with its own idea of a sensible interval.
+
+`WatchScan` is a server-streaming RPC that pushes instead:
+
+```protobuf
+rpc WatchScan(WatchScanRequest) returns (stream Scan);
+```
+
+Typed stubs are the secondary benefit; the polling loop is the expensive one.
+
+### Service surface
+
+| RPC | Purpose |
+| --- | --- |
+| `ScanService.TriggerScan` | Queue a scan; returns the scan id |
+| `ScanService.GetScan` | Read one scan |
+| `ScanService.ListScans` | Offset pagination with filters |
+| `ScanService.ListLatestScans` | Cursor pagination, newest first |
+| `ScanService.RetryScan` | Re-run an existing scan |
+| `ScanService.GetSummary` | Severity rollup over the last N days |
+| `ScanService.ListScanErrors` | Recorded failures for one scan |
+| `ScanService.WatchScan` | Stream a scan until it finishes |
+| `AnalysisService.AnalyzeScan` | Queue AI analysis of a scan artifact |
+| `AnalysisService.ListAnalyses` | Paginated analyses |
+| `AnalysisService.RetryAnalysis` | Re-run an analysis now |
+
+Health checks use the standard `grpc.health.v1.Health` service, so off-the-shelf
+probes work. Server reflection is registered, so `grpcurl` needs no local copy
+of the proto.
+
+### Authentication
+
+gRPC takes an API key only:
+
+```
+authorization: Bearer <api-key>
+```
+
+**The HMAC-signed webhook does not port to gRPC and is not going to.** The
+signature covers the exact bytes of the HTTP request body; a gRPC caller never
+handles those bytes, because the client library serializes the message, so
+there is nothing stable to sign. CI systems that already sign their payloads
+keep using `POST /v1/{tenant}/webhook/security-scan` over HTTP.
+
+`grpc.health.v1.Health` is served without a credential, matching `GET /health`.
+Everything else — reflection included — needs the key.
+
+### Error codes
+
+The same failure reports the same thing on both surfaces:
+
+| Cause | HTTP | gRPC |
+| --- | --- | --- |
+| Unknown scan | `404` | `NOT_FOUND` |
+| Bad tenant, unusable target, missing field | `400` | `INVALID_ARGUMENT` |
+| Scanner pool saturated | `429` | `RESOURCE_EXHAUSTED` |
+| Rate limit hit | `429` | `RESOURCE_EXHAUSTED` |
+| AI provider quota | `429` | `RESOURCE_EXHAUSTED` |
+| Missing or wrong API key | `401` | `UNAUTHENTICATED` |
+| Anything else | `500` | `INTERNAL` |
+
+### Using it with grpcurl
+
+```bash
+export KEY="your-api-key"
+export ADDR="localhost:9000"          # docker-compose maps it to 9002
+
+# What is served? (reflection)
+grpcurl -plaintext -H "authorization: Bearer $KEY" $ADDR list
+
+# Liveness — no credential needed
+grpcurl -plaintext $ADDR grpc.health.v1.Health/Check
+
+# Queue a scan; the response carries the scan id
+grpcurl -plaintext -H "authorization: Bearer $KEY" \
+  -d '{"tenant":"acme","tool":"TOOL_TRIVY","image":"nginx:latest"}' \
+  $ADDR automaton.sec.v1.ScanService/TriggerScan
+
+# Follow it to completion — one message per change, then the stream closes
+grpcurl -plaintext -H "authorization: Bearer $KEY" \
+  -d '{"tenant":"acme","id":"<scan-id>"}' \
+  $ADDR automaton.sec.v1.ScanService/WatchScan
+
+# Read it back
+grpcurl -plaintext -H "authorization: Bearer $KEY" \
+  -d '{"tenant":"acme","id":"<scan-id>"}' \
+  $ADDR automaton.sec.v1.ScanService/GetScan
+```
+
+Use `-d '{"tenant":"acme","page":1,"page_size":20,"filters":{"tool":"TOOL_TRIVY"}}'`
+against `ListScans` to filter, and `ListLatestScans` with the previous
+response's `nextCursor` to page backwards through history.
+
+### Using the Go SDK
+
+```bash
+go get github.com/bryanwahyu/automaton-sec/pkg/sdk
+```
+
+```go
+package main
+
+import (
+	"context"
+	"log"
+	"os"
+	"time"
+
+	secv1 "github.com/bryanwahyu/automaton-sec/gen/go/automaton/sec/v1"
+	"github.com/bryanwahyu/automaton-sec/pkg/sdk"
+)
+
+func main() {
+	c, err := sdk.New("api.example.com:9000",
+		sdk.WithAPIKey(os.Getenv("AUTOMATON_SEC_API_KEY")),
+		sdk.WithTLS(), // omit for a plaintext port, e.g. localhost
+	)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer c.Close()
+
+	// A scan can run for many minutes; bound the wait with your own context.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
+	defer cancel()
+
+	res, err := c.TriggerScan(ctx, sdk.TrivyScan("acme", "nginx:latest"))
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	// Streams, and falls back to polling if the stream cannot be established.
+	scan, err := c.WaitForScan(ctx, "acme", res.GetScanId())
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	log.Printf("status=%s findings=%d artifact=%s",
+		scan.GetStatus(), scan.GetCounts().GetTotal(), scan.GetArtifactUrl())
+
+	if scan.GetStatus() == secv1.Status_STATUS_ERROR {
+		// A failed scan usually has a recorded reason.
+		errs, _ := c.ListScanErrors(ctx, "acme", scan.GetId(), 10)
+		for _, e := range errs.GetErrors() {
+			log.Printf("  %s: %s", e.GetPhase(), e.GetMessage())
+		}
+	}
+}
+```
+
+One request constructor per scanner puts the value in the field that tool
+actually reads, so an image cannot be sent where a URL belongs:
+
+```go
+sdk.TrivyScan("acme", "nginx:latest")            // image
+sdk.NucleiScan("acme", "https://example.com")    // target
+sdk.ZAPScan("acme", "https://example.com", "baseline")
+sdk.SQLMapScan("acme", "https://example.com/?id=1")
+sdk.GitleaksScan("acme", "my-repo")              // path, inside workspaceRoot
+sdk.SemgrepScan("acme", "my-repo")
+sdk.OSVScan("acme", "my-repo")
+
+// CI context and free-form metadata
+req := sdk.WithCI(sdk.TrivyScan("acme", "nginx:latest"), "github", "main", os.Getenv("GITHUB_SHA"))
+req, err := sdk.WithMetadata(req, map[string]any{"pipeline": "nightly"})
+```
+
+Other client options: `WithInsecure` (the default), `WithTLSConfig` for a
+private CA, `WithTimeout` for the per-call deadline, `WithRetryPolicy`, and
+`WithDialOptions` for anything the wrapper does not model. Retries apply only to
+`UNAVAILABLE`, `DEADLINE_EXCEEDED` and `RESOURCE_EXHAUSTED` — a rejected
+argument fails identically however often it is sent, so it is returned at once.
+
+### Clients in other languages
+
+`buf generate` with your own `buf.gen.yaml` produces stubs from the same proto:
+
+```bash
+buf generate --template buf.gen.python.yaml   # or ts, java, ...
+```
+
+A browser cannot call plain gRPC without a proxy. Use the REST API from
+browsers; it has CORS configured.
+
+### Changing the contract
+
+```bash
+buf lint                                  # style
+buf breaking --against '.git#branch=master'  # compatibility
+buf generate                              # regenerate gen/go, then commit it
+```
+
+CI runs all three, so a contract change cannot break a client silently and
+`gen/` cannot go stale.
 
 ## 🔍 Security Tool Examples
 

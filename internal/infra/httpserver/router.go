@@ -2,9 +2,7 @@ package httpserver
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -14,10 +12,10 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/cors"
 
+	"github.com/bryanwahyu/automaton-sec/internal/apierr"
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
 	appscans "github.com/bryanwahyu/automaton-sec/internal/application/scans"
-	domai "github.com/bryanwahyu/automaton-sec/internal/domain/ai"
 	anldom "github.com/bryanwahyu/automaton-sec/internal/domain/analyst"
 	serrdom "github.com/bryanwahyu/automaton-sec/internal/domain/scanerrors"
 	domain "github.com/bryanwahyu/automaton-sec/internal/domain/scans"
@@ -190,36 +188,32 @@ func requireValidTenant(next http.Handler) http.Handler {
 	})
 }
 
-// badRequest marks an error as caller error so wrap answers 400 instead of 500.
-type badRequest struct{ error }
-
-func (b badRequest) Unwrap() error { return b.error }
-
-func errBadRequest(err error) error { return badRequest{err} }
+// errBadRequest marks an error as caller error so wrap answers 400 instead of
+// 500. The marker lives in apierr because the gRPC surface reads it too.
+func errBadRequest(err error) error { return apierr.InvalidArgument(err) }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) error
 
+// wrap turns a handler error into a response. The classification is shared with
+// the gRPC server so the two surfaces cannot disagree about what a failure is;
+// only the rendering below is HTTP-specific.
 func (r *Router) wrap(h handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, req *http.Request) {
-		if err := h(w, req); err != nil {
-			if errors.Is(err, sql.ErrNoRows) {
-				http.Error(w, "not found", http.StatusNotFound)
-				return
-			}
-			if errors.Is(err, domai.ErrQuotaExceeded) {
-				http.Error(w, "ai quota exceeded", http.StatusTooManyRequests)
-				return
-			}
-			if errors.Is(err, application.ErrBusy) {
-				w.Header().Set("Retry-After", "60")
-				http.Error(w, "scanner capacity reached, retry later", http.StatusTooManyRequests)
-				return
-			}
-			var bad badRequest
-			if errors.As(err, &bad) {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
+		err := h(w, req)
+		if err == nil {
+			return
+		}
+		switch apierr.Classify(err) {
+		case apierr.KindNotFound:
+			http.Error(w, "not found", http.StatusNotFound)
+		case apierr.KindQuotaExceeded:
+			http.Error(w, "ai quota exceeded", http.StatusTooManyRequests)
+		case apierr.KindBusy:
+			w.Header().Set("Retry-After", "60")
+			http.Error(w, "scanner capacity reached, retry later", http.StatusTooManyRequests)
+		case apierr.KindInvalidArgument:
+			http.Error(w, err.Error(), http.StatusBadRequest)
+		default:
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
 	}

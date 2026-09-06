@@ -1,0 +1,296 @@
+syntax = "proto3";
+
+package automaton.sec.v1;
+
+import "google/protobuf/struct.proto";
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/bryanwahyu/automaton-sec/gen/go/automaton/sec/v1;secv1";
+
+// ScanService is the gRPC face of the scan API.
+//
+// Every request carries its tenant as a field rather than a URL segment; it is
+// validated by an interceptor with the same rules the HTTP router applies to
+// the path parameter.
+service ScanService {
+  // TriggerScan queues a scan and returns immediately with its id. The scan
+  // itself runs on the same bounded worker pool the HTTP webhook uses, so a
+  // saturated pool answers RESOURCE_EXHAUSTED.
+  rpc TriggerScan(TriggerScanRequest) returns (TriggerScanResponse);
+
+  // GetScan reads one scan by id.
+  rpc GetScan(GetScanRequest) returns (Scan);
+
+  // ListScans pages through a tenant's scans with offset pagination and
+  // optional filters.
+  rpc ListScans(ListScansRequest) returns (ListScansResponse);
+
+  // ListLatestScans pages through the newest scans first, using a
+  // (triggered_at, id) cursor so concurrent inserts cannot shift the window.
+  rpc ListLatestScans(ListLatestScansRequest) returns (ListLatestScansResponse);
+
+  // RetryScan re-runs an existing scan. It is queued on the same pool as a
+  // fresh scan, so a retry storm cannot starve the service.
+  rpc RetryScan(RetryScanRequest) returns (RetryScanResponse);
+
+  // GetSummary aggregates a tenant's findings over the last N days.
+  rpc GetSummary(GetSummaryRequest) returns (Summary);
+
+  // ListScanErrors reads the failures recorded for one scan.
+  rpc ListScanErrors(ListScanErrorsRequest) returns (ListScanErrorsResponse);
+
+  // WatchScan streams a scan until it reaches a terminal status. The first
+  // message is the current state, so a caller that connects after the scan has
+  // already finished still gets exactly one message and a clean EOF.
+  //
+  // This exists so clients stop reimplementing a polling loop. The server
+  // still polls internally today; that is an implementation detail which will
+  // be replaced by a real notification path without changing this contract.
+  rpc WatchScan(WatchScanRequest) returns (stream Scan);
+}
+
+// AnalysisService runs AI analysis over a finished scan's artifact.
+service AnalysisService {
+  // AnalyzeScan queues analysis of a scan's artifact and returns the id of the
+  // analysis record immediately.
+  rpc AnalyzeScan(AnalyzeScanRequest) returns (AnalyzeScanResponse);
+
+  // ListAnalyses pages through a tenant's analyses, newest first.
+  rpc ListAnalyses(ListAnalysesRequest) returns (ListAnalysesResponse);
+
+  // RetryAnalysis re-runs analysis immediately, ignoring any scheduled
+  // backoff. Passing analysis_id retries that record in place.
+  rpc RetryAnalysis(RetryAnalysisRequest) returns (AnalyzeScanResponse);
+}
+
+// Tool identifies the scanner to dispatch.
+enum Tool {
+  TOOL_UNSPECIFIED = 0;
+  TOOL_SQLMAP = 1;
+  TOOL_TRIVY = 2;
+  TOOL_GITLEAKS = 3;
+  TOOL_ZAP = 4;
+  TOOL_NUCLEI = 5;
+  // TOOL_SEMGREP runs static analysis over source code.
+  TOOL_SEMGREP = 6;
+  // TOOL_OSV_SCANNER resolves lockfile dependencies against the OSV database.
+  TOOL_OSV_SCANNER = 7;
+}
+
+// Status is the lifecycle of a scan row.
+//
+// A scanner that exits non-zero purely because it found something has still
+// succeeded; only a genuine tool failure is STATUS_FAILED. STATUS_ERROR means
+// the run never produced a usable result.
+enum Status {
+  STATUS_UNSPECIFIED = 0;
+  STATUS_RUNNING = 1;
+  STATUS_SUCCESS = 2;
+  STATUS_FAILED = 3;
+  STATUS_ERROR = 4;
+}
+
+// SeverityCounts is the finding tally parsed out of a scanner's report.
+message SeverityCounts {
+  int32 critical = 1;
+  int32 high = 2;
+  int32 medium = 3;
+  int32 low = 4;
+  int32 total = 5;
+}
+
+// Scan is one scanner run.
+message Scan {
+  string id = 1;
+  string tenant = 2;
+  google.protobuf.Timestamp triggered_at = 3;
+  Tool tool = 4;
+  // target is the URL scanned by nuclei, zap and sqlmap.
+  string target = 5;
+  // image is the container reference scanned by trivy.
+  string image = 6;
+  // path is the workspace-relative directory scanned by the filesystem tools.
+  string path = 7;
+  Status status = 8;
+  SeverityCounts counts = 9;
+  string artifact_url = 10;
+  string raw_format = 11;
+  int64 duration_ms = 12;
+  // source, commit_sha and branch carry the CI context that triggered the scan.
+  string source = 13;
+  string commit_sha = 14;
+  string branch = 15;
+  // metadata is free-form caller context, stored and returned untouched.
+  google.protobuf.Struct metadata = 16;
+}
+
+message TriggerScanRequest {
+  string tenant = 1;
+  Tool tool = 2;
+  // mode is a tool-specific profile, e.g. "baseline" or "full" for zap.
+  string mode = 3;
+  string image = 4;
+  string path = 5;
+  string target = 6;
+  string source = 7;
+  string commit_sha = 8;
+  string branch = 9;
+  google.protobuf.Struct metadata = 10;
+}
+
+message TriggerScanResponse {
+  // scan_id is the handle for GetScan and WatchScan. It is minted before the
+  // scan is queued so the caller never has to guess which scan is its own.
+  string scan_id = 1;
+  string tenant = 2;
+  Tool tool = 3;
+  string branch = 4;
+  string commit_sha = 5;
+  google.protobuf.Timestamp queued_at = 6;
+}
+
+message GetScanRequest {
+  string tenant = 1;
+  string id = 2;
+}
+
+message ScanFilters {
+  string target = 1;
+  Tool tool = 2;
+  Status status = 3;
+  string branch = 4;
+}
+
+message ListScansRequest {
+  string tenant = 1;
+  // page is 1-based. Zero means the first page.
+  int32 page = 2;
+  // page_size defaults to 20 and is capped at 100.
+  int32 page_size = 3;
+  ScanFilters filters = 4;
+}
+
+message ListScansResponse {
+  repeated Scan scans = 1;
+  int32 page = 2;
+  int32 page_size = 3;
+  int64 total_items = 4;
+  int32 total_pages = 5;
+}
+
+// Cursor points at the last row of a page. Both fields are required together:
+// the timestamp alone is not unique.
+message Cursor {
+  google.protobuf.Timestamp triggered_at = 1;
+  string id = 2;
+}
+
+message ListLatestScansRequest {
+  string tenant = 1;
+  // limit defaults to 20 and is capped at 100.
+  int32 limit = 2;
+  // cursor is empty on the first page; pass back next_cursor for the rest.
+  Cursor cursor = 3;
+}
+
+message ListLatestScansResponse {
+  repeated Scan scans = 1;
+  // next_cursor is unset on the last page.
+  Cursor next_cursor = 2;
+  bool has_more = 3;
+}
+
+message RetryScanRequest {
+  string tenant = 1;
+  string id = 2;
+}
+
+message RetryScanResponse {
+  string scan_id = 1;
+  string tenant = 2;
+  google.protobuf.Timestamp queued_at = 3;
+}
+
+message GetSummaryRequest {
+  string tenant = 1;
+  // days defaults to 7 and is capped at 365.
+  int32 days = 2;
+}
+
+message Summary {
+  int64 total_scans = 1;
+  int64 critical = 2;
+  int64 high = 3;
+  int64 medium = 4;
+}
+
+message ScanError {
+  int64 id = 1;
+  string tenant = 2;
+  string scan_id = 3;
+  string tool = 4;
+  // phase is where the failure happened: "trigger" or "retry".
+  string phase = 5;
+  string message = 6;
+  // details_json is an opaque JSON blob recorded alongside the message.
+  string details_json = 7;
+  google.protobuf.Timestamp created_at = 8;
+}
+
+message ListScanErrorsRequest {
+  string tenant = 1;
+  string scan_id = 2;
+  // limit defaults to 20 and is capped at 100.
+  int32 limit = 3;
+}
+
+message ListScanErrorsResponse {
+  repeated ScanError errors = 1;
+}
+
+message WatchScanRequest {
+  string tenant = 1;
+  string id = 2;
+}
+
+message Analysis {
+  string id = 1;
+  string tenant = 2;
+  string scan_id = 3;
+  string file_url = 4;
+  // result is the analyzer's raw JSON output, passed through as a string so
+  // the contract does not have to track the analyzer's schema.
+  string result = 5;
+  google.protobuf.Timestamp created_at = 6;
+}
+
+message AnalyzeScanRequest {
+  string tenant = 1;
+  string scan_id = 2;
+}
+
+message AnalyzeScanResponse {
+  string analysis_id = 1;
+  string tenant = 2;
+  string scan_id = 3;
+  google.protobuf.Timestamp queued_at = 4;
+}
+
+message ListAnalysesRequest {
+  string tenant = 1;
+  // page is 1-based. Zero means the first page.
+  int32 page = 2;
+  // page_size defaults to 20 and is capped at 100.
+  int32 page_size = 3;
+}
+
+message ListAnalysesResponse {
+  repeated Analysis analyses = 1;
+}
+
+message RetryAnalysisRequest {
+  string tenant = 1;
+  string scan_id = 2;
+  // analysis_id retries an existing record in place. Empty creates a new one.
+  string analysis_id = 3;
+}

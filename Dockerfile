@@ -120,5 +120,6 @@ USER appuser
 RUN nuclei -update-templates -silent || true
 
 WORKDIR /app
-EXPOSE 5000
+# 5000 serves the REST API, 9000 the gRPC one.
+EXPOSE 5000 9000
 ENTRYPOINT ["./security-api"]

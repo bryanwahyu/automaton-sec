@@ -32,8 +32,13 @@ type AuthConfig struct {
 //
 // Health is served without a credential and without a rate-limit budget, the
 // same way the HTTP router leaves /health and /ready open: a probe must not
-// need a secret to run, and the response exposes no scan data. Everything else
-// — reflection included, since it discloses the schema — takes an API key.
+// need a secret to run, and the response exposes no scan data.
+//
+// Everything else takes an API key, reflection included. Not to keep the
+// schema secret — the proto is published in this repository, so reflection
+// discloses nothing a reader cannot already clone — but so that one rule
+// covers everything a client can reach. Anyone debugging with grpcurl holds a
+// key already, because every call worth making needs one.
 const healthMethodPrefix = "/grpc.health.v1.Health/"
 
 func isPublicMethod(fullMethod string) bool {

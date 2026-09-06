@@ -3,7 +3,7 @@
 #
 # Every value can also come from the environment, which wins over this file --
 # keep secrets there rather than on disk:
-#   SERVER_PORT, SERVER_SHUTDOWN_GRACE
+#   SERVER_PORT, SERVER_GRPC_PORT, SERVER_SHUTDOWN_GRACE
 #   DB_TYPE, DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_NAME
 #   MINIO_ENDPOINT, MINIO_ACCESS_KEY, MINIO_SECRET_KEY, MINIO_BUCKET,
 #   MINIO_REGION, MINIO_USE_SSL
@@ -16,6 +16,9 @@
 
 server:
   port: 5000
+  # The gRPC API listens here, beside the REST one. Set a negative value to
+  # turn the gRPC listener off entirely.
+  grpcPort: 9000
   # How long to wait for in-flight scans when the process is asked to stop.
   shutdownGrace: 30s
 

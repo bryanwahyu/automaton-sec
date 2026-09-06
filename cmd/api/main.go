@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -12,6 +13,7 @@ import (
 	"time"
 
 	"github.com/go-chi/chi/v5"
+	"google.golang.org/grpc"
 
 	"github.com/bryanwahyu/automaton-sec/internal/application"
 	appai "github.com/bryanwahyu/automaton-sec/internal/application/ai"
@@ -24,6 +26,7 @@ import (
 	mysqlp "github.com/bryanwahyu/automaton-sec/internal/infra/db/mysql"
 	pgp "github.com/bryanwahyu/automaton-sec/internal/infra/db/postgres"
 	dockerrunner "github.com/bryanwahyu/automaton-sec/internal/infra/executor/docker"
+	"github.com/bryanwahyu/automaton-sec/internal/infra/grpcserver"
 	"github.com/bryanwahyu/automaton-sec/internal/infra/httpserver"
 	minioStore "github.com/bryanwahyu/automaton-sec/internal/infra/storage"
 	"github.com/bryanwahyu/automaton-sec/internal/middleware"
@@ -180,6 +183,47 @@ func main() {
 		}
 	}()
 
+	// The gRPC API is served beside the HTTP one on its own port. It shares
+	// every service, the scanner pool and the target policy with the router
+	// above, so the two surfaces cannot answer differently.
+	//
+	// gRPC has no webhook-signature equivalent: the HTTP signature covers the
+	// exact bytes of a request body, and a gRPC caller never handles those
+	// bytes. It authenticates with API keys, and the signed webhook stays
+	// HTTP-only.
+	var (
+		grpcSrv *grpc.Server
+		grpcLis net.Listener
+	)
+	if cfg.Server.GRPCPort > 0 {
+		grpcAddr := fmt.Sprintf(":%d", cfg.Server.GRPCPort)
+		grpcLis, err = net.Listen("tcp", grpcAddr)
+		if err != nil {
+			log.Fatalf("grpc listen error: %v", err)
+		}
+		grpcSrv = grpcserver.New(grpcserver.Deps{
+			ScansSvc: scansSvc,
+			AISvc:    aiSvc,
+			ScanErrs: scanErrRepo,
+			Pool:     pool,
+			Policy:   policy,
+			Auth: grpcserver.AuthConfig{
+				Disabled: cfg.Auth.Disabled,
+				APIKeys:  cfg.Auth.APIKeys,
+			},
+			RateLimitBurst:     cfg.RateLimit.Burst,
+			RateLimitPerMinute: cfg.RateLimit.PerMinute,
+		})
+		go func() {
+			log.Printf("grpc server listening on %s", grpcAddr)
+			if err := grpcSrv.Serve(grpcLis); err != nil && err != grpc.ErrServerStopped {
+				log.Fatalf("grpc server error: %v", err)
+			}
+		}()
+	} else {
+		log.Printf("grpc server disabled (server.grpcPort=%d)", cfg.Server.GRPCPort)
+	}
+
 	// graceful shutdown
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
@@ -192,6 +236,23 @@ func main() {
 
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		log.Printf("http shutdown error: %v", err)
+	}
+
+	// GracefulStop lets in-flight RPCs — including a WatchScan stream — finish
+	// before the listener closes. It is bounded by the same grace window as
+	// everything else so a stuck stream cannot hold shutdown open forever.
+	if grpcSrv != nil {
+		stopped := make(chan struct{})
+		go func() {
+			grpcSrv.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-stopped:
+		case <-shutdownCtx.Done():
+			log.Printf("grpc shutdown grace expired; forcing stop")
+			grpcSrv.Stop()
+		}
 	}
 
 	// srv.Shutdown only drains HTTP handlers; scans run detached from the

@@ -13,6 +13,9 @@ import (
 type Config struct {
 	Server struct {
 		Port int `yaml:"port"`
+		// GRPCPort serves the gRPC API alongside the HTTP one. A negative
+		// value disables the gRPC listener; zero takes the default.
+		GRPCPort int `yaml:"grpcPort"`
 		// ShutdownGrace is how long to wait for in-flight scans on SIGTERM.
 		ShutdownGrace Duration `yaml:"shutdownGrace"`
 	} `yaml:"server"`
@@ -130,6 +133,7 @@ func Load(path string) (*Config, error) {
 // applyEnv overlays environment variables on top of the file.
 func (c *Config) applyEnv() {
 	envInt("SERVER_PORT", &c.Server.Port)
+	envInt("SERVER_GRPC_PORT", &c.Server.GRPCPort)
 	envDuration("SERVER_SHUTDOWN_GRACE", &c.Server.ShutdownGrace)
 
 	envString("DB_TYPE", &c.Database.Type)
@@ -214,6 +218,9 @@ func (c *Config) applyDefaults() {
 	if c.Server.Port == 0 {
 		c.Server.Port = 5000
 	}
+	if c.Server.GRPCPort == 0 {
+		c.Server.GRPCPort = 9000
+	}
 	if c.Database.Host == "" {
 		c.Database.Host = "localhost"
 	}
@@ -247,6 +254,9 @@ func (c *Config) Validate() error {
 	if !c.Auth.Disabled && c.Auth.WebhookHMACKey == "" && len(c.Auth.APIKeys) == 0 {
 		return fmt.Errorf("auth: set auth.webhookHmacKey and/or auth.apiKeys, " +
 			"or set auth.disabled: true to run without authentication")
+	}
+	if c.Server.GRPCPort > 0 && c.Server.GRPCPort == c.Server.Port {
+		return fmt.Errorf("server.grpcPort (%d) must differ from server.port", c.Server.GRPCPort)
 	}
 	switch c.Database.Type {
 	case "", "mysql", "postgres", "postgresql", "pg":

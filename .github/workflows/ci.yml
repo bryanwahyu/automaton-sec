@@ -38,6 +38,40 @@ jobs:
       - name: go test
         run: go test -race ./...
 
+  proto:
+    name: Protobuf lint and breaking-change check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # buf breaking compares against the master branch, which has to be
+          # in the clone for the comparison to run at all.
+          fetch-depth: 0
+
+      - uses: bufbuild/buf-action@v1
+        with:
+          setup_only: true
+
+      - name: buf lint
+        run: buf lint
+
+      # A merged change that breaks the contract is a broken client somewhere
+      # else, so it fails here rather than at a caller's next deploy.
+      - name: buf breaking
+        run: buf breaking --against '.git#branch=master'
+
+      # The generated code is committed so consumers never need protoc. This
+      # proves what is committed still matches the proto.
+      - name: buf generate is up to date
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+          buf generate
+          if ! git diff --exit-code -- gen/; then
+            echo "gen/ is stale; run 'buf generate' and commit the result"
+            exit 1
+          fi
+
   vulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

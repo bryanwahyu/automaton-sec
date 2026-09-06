@@ -48,6 +48,11 @@ jobs:
           # in the clone for the comparison to run at all.
           fetch-depth: 0
 
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
       - uses: bufbuild/buf-action@v1
         with:
           setup_only: true
@@ -66,6 +71,9 @@ jobs:
         run: |
           go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.12
           go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.2
+          # buf runs the plugins as executables, so they have to be findable.
+          # go install puts them in GOPATH/bin, which is not on PATH by default.
+          export PATH="$PATH:$(go env GOPATH)/bin"
           buf generate
           if ! git diff --exit-code -- gen/; then
             echo "gen/ is stale; run 'buf generate' and commit the result"

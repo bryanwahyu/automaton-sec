@@ -13,7 +13,7 @@ minio:
   endpoint: localhost:9000
   accessKey: minioadmin
   secretKey: minioadmin
-  bucketName: securitymuaraenim
+  bucketName: automaton-sec
   region: us-east-1
   useSSL: false
 openai:

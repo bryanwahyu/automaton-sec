@@ -65,6 +65,9 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		cmd = exec.CommandContext(ctx,
 			"trivy", "image",
 			"--scanners", "vuln,secret,misconfig",
+			// The full package inventory is what lets AssessTrivyImage tell
+			// "no vulnerable packages" apart from "no packages visible at all".
+			"--list-all-pkgs",
 			"--severity", "CRITICAL,HIGH,MEDIUM,LOW",
 			"--format", "json",
 			"--timeout", "15m",
@@ -190,14 +193,33 @@ func (r *Runner) Run(ctx context.Context, req domain.RunRequest) (domain.RunResu
 		return domain.RunResult{}, fmt.Errorf("output file not created: %s, command output: %s", artifactPath, string(out))
 	}
 
-	counts, _ := domain.ParseSeverityCounts(req.Tool, artifactPath)
-
-	return domain.RunResult{
-		Counts:            counts,
+	res := domain.RunResult{
 		LocalArtifactPath: artifactPath,
 		RawFormat:         rawFormat,
 		ExitCode:          exitCode,
 		HasFindings:       hasFindings,
 		DurationMS:        duration,
-	}, nil
+	}
+
+	// A report we cannot read must not come back as "zero findings": that is
+	// indistinguishable from a clean scan. Keep the artifact for inspection
+	// and let the service mark the scan failed.
+	counts, perr := domain.ParseSeverityCounts(req.Tool, artifactPath)
+	if perr != nil {
+		res.ParseError = perr.Error()
+		return res, nil
+	}
+
+	if req.Tool == domain.ToolTrivy {
+		integrity, ierr := domain.AssessTrivyImage(req.Image, artifactPath)
+		if ierr != nil {
+			res.ParseError = ierr.Error()
+			return res, nil
+		}
+		integrity.AddTo(&counts)
+		res.Integrity = &integrity
+	}
+
+	res.Counts = counts
+	return res, nil
 }

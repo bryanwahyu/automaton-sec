@@ -294,6 +294,9 @@ func TestStatusFromRun(t *testing.T) {
 		{"clean exit", domain.RunResult{ExitCode: 0}, domain.StatusSuccess},
 		{"findings exit", domain.RunResult{ExitCode: 1, HasFindings: true}, domain.StatusSuccess},
 		{"tool failure", domain.RunResult{ExitCode: 2}, domain.StatusFailed},
+		// An unreadable report has empty counts; success would read as clean.
+		{"unreadable report", domain.RunResult{ExitCode: 0, ParseError: "bad json"}, domain.StatusFailed},
+		{"unreadable report with findings exit", domain.RunResult{ExitCode: 1, HasFindings: true, ParseError: "bad json"}, domain.StatusFailed},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -302,4 +305,79 @@ func TestStatusFromRun(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestTriggerScanStoresImageIntegrity(t *testing.T) {
+	// The integrity verdict is what tells a user a zero-CVE image is not
+	// actually clean; it has to survive into the stored scan and the result.
+	repo, store := newFakeRepo(), &fakeStore{}
+	integrity := &domain.ImageIntegrity{
+		Verdict: domain.IntegrityUnverified,
+		Issues:  []domain.IntegrityIssue{{Check: domain.CheckOSPackagesMissing, Severity: "high"}},
+	}
+	runner := &fakeRunner{result: domain.RunResult{
+		LocalArtifactPath: artifact(t), RawFormat: "json",
+		Counts:    domain.SeverityCounts{High: 1, Total: 1},
+		Integrity: integrity,
+	}}
+
+	res, err := newService(t, repo, runner, store).TriggerScan(context.Background(), TriggerScanCommand{
+		TenantID: "acme", Tool: "trivy", Image: "nginx:latest",
+		Metadata: map[string]any{"pipeline": "ci"},
+	})
+	if err != nil {
+		t.Fatalf("TriggerScan: %v", err)
+	}
+	if res.Integrity == nil || res.Integrity.Verdict != domain.IntegrityUnverified {
+		t.Fatalf("result integrity = %+v, want unverified", res.Integrity)
+	}
+
+	final := repo.saved[len(repo.saved)-1]
+	meta, ok := final.Metadata.(map[string]any)
+	if !ok {
+		t.Fatalf("metadata = %T, want map", final.Metadata)
+	}
+	if meta["pipeline"] != "ci" {
+		t.Fatalf("caller metadata lost: %+v", meta)
+	}
+	got, ok := meta[MetaImageIntegrity].(map[string]any)
+	if !ok || got["verdict"] != domain.IntegrityUnverified {
+		t.Fatalf("stored integrity = %#v, want a plain map with verdict unverified", meta[MetaImageIntegrity])
+	}
+}
+
+func TestWithRunEvidence(t *testing.T) {
+	t.Run("nothing to add keeps metadata as is", func(t *testing.T) {
+		if got := withRunEvidence(nil, domain.RunResult{}); got != nil {
+			t.Fatalf("got %#v, want nil", got)
+		}
+	})
+
+	t.Run("retry replaces the previous run's evidence", func(t *testing.T) {
+		prev := map[string]any{
+			"pipeline":         "ci",
+			MetaImageIntegrity: map[string]any{"verdict": "unverified"},
+			MetaParseError:     "old error",
+		}
+		got := withRunEvidence(prev, domain.RunResult{
+			Integrity: &domain.ImageIntegrity{Verdict: domain.IntegrityVerified},
+		}).(map[string]any)
+
+		if _, stale := got[MetaParseError]; stale {
+			t.Fatal("stale parse_error carried over from the previous run")
+		}
+		if v := got[MetaImageIntegrity].(map[string]any)["verdict"]; v != domain.IntegrityVerified {
+			t.Fatalf("verdict = %v, want verified", v)
+		}
+		if prev[MetaParseError] != "old error" {
+			t.Fatal("the caller's map was mutated")
+		}
+	})
+
+	t.Run("non-object metadata is kept under its own key", func(t *testing.T) {
+		got := withRunEvidence([]any{"a"}, domain.RunResult{ParseError: "bad"}).(map[string]any)
+		if got[MetaParseError] != "bad" || got[MetaCallerMetadata] == nil {
+			t.Fatalf("got %#v", got)
+		}
+	})
 }

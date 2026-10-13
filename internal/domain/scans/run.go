@@ -21,4 +21,10 @@ type RunResult struct {
 	// HasFindings is true when the scanner exited non-zero only to signal findings.
 	HasFindings bool
 	DurationMS  int64
+	// ParseError is set when the scanner produced a report that could not be
+	// read. Counts are then meaningless, so the scan must not count as clean.
+	ParseError string
+	// Integrity is the evidence behind a Trivy image scan; nil for other tools.
+	// Counted integrity issues are already included in Counts.
+	Integrity *ImageIntegrity
 }

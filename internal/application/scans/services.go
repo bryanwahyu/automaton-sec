@@ -2,6 +2,7 @@ package scans
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -58,6 +59,9 @@ type TriggerScanResult struct {
 	ArtifactURL string                `json:"artifact_url"`
 	RawFormat   string                `json:"raw_format"`
 	DurationMS  int64                 `json:"duration_ms"`
+	// Integrity is set for image scans: whether the result can be trusted, and
+	// the digest to deploy so the shipped image is the scanned one.
+	Integrity *domain.ImageIntegrity `json:"image_integrity,omitempty"`
 }
 
 // UpdateStatus sets the status of one specific scan.
@@ -153,7 +157,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 		Source:      cmd.Source,
 		CommitSHA:   cmd.CommitSHA,
 		Branch:      cmd.Branch,
-		Metadata:    cmd.Metadata,
+		Metadata:    withRunEvidence(cmd.Metadata, res),
 	}
 
 	if err := s.Repo.Save(ctx, scan); err != nil {
@@ -167,6 +171,7 @@ func (s *Service) TriggerScan(ctx context.Context, cmd TriggerScanCommand) (Trig
 		ArtifactURL: scan.ArtifactURL,
 		RawFormat:   scan.RawFormat,
 		DurationMS:  scan.DurationMS,
+		Integrity:   res.Integrity,
 	}, nil
 }
 
@@ -223,7 +228,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 		Source:      existing.Source,
 		CommitSHA:   existing.CommitSHA,
 		Branch:      existing.Branch,
-		Metadata:    existing.Metadata,
+		Metadata:    withRunEvidence(existing.Metadata, res),
 	}
 	if err := s.Repo.Save(ctx, updated); err != nil {
 		return TriggerScanResult{ID: string(existing.ID), Status: string(updated.Status)}, err
@@ -236,6 +241,7 @@ func (s *Service) RetryScan(ctx context.Context, tenant string, id domain.ScanID
 		ArtifactURL: updated.ArtifactURL,
 		RawFormat:   updated.RawFormat,
 		DurationMS:  updated.DurationMS,
+		Integrity:   res.Integrity,
 	}, nil
 }
 
@@ -313,7 +319,13 @@ func (s *Service) Summary(ctx context.Context, tenant string, sinceDays int) (ma
 // A scanner that exits non-zero purely because it found something has still
 // succeeded; the runner reports that as HasFindings. Only a genuine tool
 // failure becomes StatusFailed.
+//
+// A run whose report could not be parsed is failed too: its counts are empty,
+// and storing it as success would present an unread report as a clean one.
 func statusFromRun(res domain.RunResult) domain.Status {
+	if res.ParseError != "" {
+		return domain.StatusFailed
+	}
 	if res.ExitCode == 0 || res.HasFindings {
 		return domain.StatusSuccess
 	}
@@ -326,4 +338,59 @@ func (s *Service) markError(ctx context.Context, tenant string, id domain.ScanID
 	writeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 	defer cancel()
 	_ = s.Repo.UpdateStatus(writeCtx, tenant, id, domain.StatusError)
+}
+
+// Metadata keys the service writes alongside the caller's own metadata.
+const (
+	MetaImageIntegrity = "image_integrity"
+	MetaParseError     = "parse_error"
+	// MetaCallerMetadata holds caller metadata that was not a JSON object and
+	// so could not have keys added to it directly.
+	MetaCallerMetadata = "caller_metadata"
+)
+
+// withRunEvidence stores what the run learned about its own trustworthiness
+// in the scan metadata, so it is persisted and returned without a schema
+// change. Keys from a previous run (on retry) are replaced, not kept.
+func withRunEvidence(meta any, res domain.RunResult) any {
+	m := map[string]any{}
+	switch v := meta.(type) {
+	case nil:
+	case map[string]any:
+		for k, val := range v {
+			m[k] = val
+		}
+	default:
+		m[MetaCallerMetadata] = v
+	}
+	delete(m, MetaImageIntegrity)
+	delete(m, MetaParseError)
+
+	if res.Integrity != nil {
+		// Stored as plain JSON values, the same shape it has after a database
+		// round trip, so every consumer (including the gRPC Struct conversion,
+		// which rejects Go structs) sees one representation.
+		if v, err := toJSONValue(res.Integrity); err == nil {
+			m[MetaImageIntegrity] = v
+		}
+	}
+	if res.ParseError != "" {
+		m[MetaParseError] = res.ParseError
+	}
+	if len(m) == 0 {
+		return meta
+	}
+	return m
+}
+
+func toJSONValue(v any) (any, error) {
+	raw, err := json.Marshal(v)
+	if err != nil {
+		return nil, err
+	}
+	var out any
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return nil, err
+	}
+	return out, nil
 }

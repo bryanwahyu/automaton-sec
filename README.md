@@ -592,6 +592,51 @@ scan '{"tool":"trivy","image":"nginx:latest"}'
 
 Scans for vulnerabilities (CVEs), secrets, and misconfigurations.
 
+#### Image integrity: when "zero findings" is not "safe"
+
+A vulnerability scanner can only report CVEs for packages it can see, and an
+image built to pass a scan exploits exactly that. Every Trivy scan is
+therefore also checked for the ways an image hides from the scanner:
+
+| Check | Severity | What it catches |
+|-------|----------|-----------------|
+| `os_packages_missing` | high | A base OS is detected but no OS packages are — the package database was deleted, so every OS CVE is invisible |
+| `inventory_empty` | high | No OS and no application packages at all: the scanner had nothing to check |
+| `os_end_of_life` | high | The OS no longer gets fixes and its vulnerability data is incomplete, so few CVEs is expected, not reassuring |
+| `digest_mismatch` | critical | The image scanned is not the digest that was requested |
+| `tag_not_pinned` | info | The image was named by tag, which can be re-pointed after the scan; `pinned_ref` gives the digest to deploy |
+
+Counted issues are added to the scan's severity counts, so dashboards and
+`/summary` show them even if they read nothing else. The full evidence is
+stored in the scan's metadata under `image_integrity`:
+
+```json
+"metadata": {
+  "image_integrity": {
+    "verdict": "unverified",
+    "requested_ref": "registry.example.com/app:latest",
+    "pinned": false,
+    "digest": "sha256:…",
+    "pinned_ref": "registry.example.com/app@sha256:…",
+    "os_family": "debian", "os_name": "12.7",
+    "os_packages": 0, "lang_packages": 0,
+    "issues": [{"check": "os_packages_missing", "severity": "high", "detail": "…"}]
+  }
+}
+```
+
+Treat `verdict: "unverified"` as a failed gate in CI, whatever the CVE count
+says. These checks cover what the scanner could not see; they do not detect
+malware inside files it did see, and they do not prove who built the image —
+use signature verification (e.g. cosign) for that.
+
+A report that cannot be parsed is stored as `failed` with the reason under
+`metadata.parse_error`, rather than as a successful scan with zero findings.
+
+`image_integrity` and `parse_error` are reserved metadata keys: the service
+overwrites them on every run. Caller metadata that is not a JSON object is
+kept under `caller_metadata`.
+
 ### Nuclei — web vulnerability scanning
 
 ```bash

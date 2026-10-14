@@ -1,854 +1,117 @@
-# Security API
+# automaton-sec
 
-A comprehensive Go-based security scanning platform with multiple security tools integration including Trivy, Nuclei, Gitleaks, ZAP, and SQLMap.
+[![CI](https://github.com/bryanwahyu/automaton-sec/actions/workflows/ci.yml/badge.svg)](https://github.com/bryanwahyu/automaton-sec/actions/workflows/ci.yml)
 
-## 🚀 Features
+A Go service that runs security scanners (Trivy, Nuclei, Gitleaks, Semgrep, osv-scanner, ZAP) on request, over REST or gRPC, and keeps the results: severity counts in Postgres or MySQL, the raw report in S3-compatible storage.
 
-### Security Scanning Tools
+## Why
 
-| Tool | Scans | Input |
-| --- | --- | --- |
-| **Trivy** | Container image vulnerabilities, secrets, misconfiguration | `image` |
-| **Nuclei** | Known CVEs, exposed panels, misconfiguration | `target` |
-| **Gitleaks** | Secrets in a repository's history | `path` |
-| **Semgrep** | Vulnerable patterns in source code (SAST) | `path` |
-| **osv-scanner** | Lockfile dependencies against the OSV database | `path` |
-| **ZAP (OWASP ZAP)** | Web application security | `target` |
-| **SQLMap** | SQL injection | `target` |
+Every pipeline I worked on ran its scanners differently: one job calls Trivy, another runs Gitleaks with its own flags, the reports end up as CI artifacts that expire, and nobody can answer "how many high findings did this service have last month". I wanted one API that a CI job (or anything else) calls with `{"tool": "trivy", "image": "..."}`, which runs the scanner, normalises the result into the same severity counts for every tool, and stores both the counts and the original report per tenant.
 
-The three `path` tools all resolve their input inside `scanner.workspaceRoot`;
-filesystem scans are refused outright when that is unset.
+## How it works
 
-### Core Features
-- RESTful API with offset and cursor pagination, plus filtering
-- gRPC API on a second port with a server-streaming `WatchScan`, so clients stop
-  polling, plus a typed Go SDK
-- HMAC-signed webhooks and bearer-key reads; nothing but `/health` is open
-- Target policy that refuses argument-shaped input and private/link-local hosts
-- Bounded scanner pool with per-scan timeouts; a full pool answers `429`
-- AI-powered vulnerability analysis (OpenAI integration)
-- MySQL or PostgreSQL for scan results
-- MinIO/S3 object storage for artifacts
-- Docker containerized deployment
-- Configurable CORS allowlist and per-tenant rate limiting
-- Liveness, readiness, detailed health, and metrics endpoints
-- Scan failures recorded per scan and readable over the API
-
-## 📋 Requirements
-
-- Docker & Docker Compose
-- Go 1.25+ (for local development)
-- MySQL 8.0+ or PostgreSQL 15+
-- MinIO or S3-compatible storage
-- OpenAI API key (optional, for AI analysis)
-
-## 🏗️ Architecture
-
-```
-security-api/
-├── cmd/api/              # Application entry point
-├── internal/
-│   ├── application/      # Business logic layer
-│   │   ├── ai/          # AI analysis services
-│   │   └── scans/       # Scan orchestration
-│   ├── domain/          # Domain models and interfaces
-│   │   ├── ai/          # AI domain models
-│   │   ├── analyst/     # Analyst domain
-│   │   └── scans/       # Scan domain models
-│   ├── middleware/      # Logging, metrics, health, rate limiting, validators
-│   ├── infra/           # Infrastructure layer
-│   │   ├── ai/          # OpenAI client
-│   │   ├── db/          # Database repositories
-│   │   ├── executor/    # Security tool executors
-│   │   ├── grpcserver/  # gRPC services and interceptors
-│   │   ├── httpserver/  # HTTP routes and handlers
-│   │   └── storage/     # MinIO/S3 storage
-│   ├── apierr/          # Error classification shared by both surfaces
-│   └── config/          # Configuration management
-├── proto/               # The gRPC contract
-├── gen/go/              # Generated stubs, committed
-├── pkg/sdk/             # Go client for the gRPC API
-├── buf.yaml             # buf lint and breaking-change rules
-├── buf.gen.yaml         # Codegen plugins
-├── Dockerfile           # Multi-stage build
-├── docker-compose.yml   # Service orchestration
-└── config.yaml.example  # Template for config.yaml
+```mermaid
+flowchart LR
+    CI[CI job / client] -->|REST webhook<br/>HMAC signed| H[HTTP server]
+    CI -->|gRPC| G[gRPC server]
+    H --> P[target policy]
+    G --> P
+    P --> Q[bounded pool<br/>429 when full]
+    Q --> R[runner: exec scanner CLI]
+    R --> A[parse severity counts]
+    A --> DB[(Postgres / MySQL)]
+    R --> S3[(MinIO / S3<br/>raw report)]
 ```
 
-## 🚀 Quick Start
+The code is split into `internal/domain` (scan entity, target policy, per-tool severity parsers), `internal/application` (use cases and the worker pool) and `internal/infra` (exec runner, DB adapters, MinIO, HTTP and gRPC servers). Both servers call the same application services. `pkg/sdk` is a small Go client for the REST API, and the gRPC contract lives in `proto/` with generated code in `gen/go`.
 
-### Option 1: Docker Compose (Recommended)
+A scan request is saved as `running`, executed in the pool, then updated with counts, duration and the artifact URL, or with the error if the scanner failed. `GET /v1/{tenant}/scans` reads them back.
+
+## Design decisions
+
+**Scanners run as local processes, not containers.** The runner calls each tool with `os/exec`; the Docker image installs pinned versions of all of them (versions are build `ARG`s). Spawning one container per scan would isolate scanners better but needs a Docker socket inside the service, which I didn't want to hand to something that takes requests from CI. The trade-off is that the scanners share the service's filesystem and resources.
+
+**A bounded pool that refuses instead of queueing.** Scanners use a lot of memory, so `scanner.maxConcurrent` caps how many run at once. When the pool is full the API returns `429` with `Retry-After` rather than putting the request in an unbounded queue. The caller has to retry, but the service can't be pushed into running out of memory, and the backlog is visible to the client.
+
+**Targets are checked before anything runs.** A scanning API is an easy way to probe someone else's network, or your own cloud metadata endpoint. Hosts are resolved and loopback, link-local and private addresses are refused unless `allowPrivateTargets` is on; `allowedHosts` can restrict scanning to your own domains; filesystem scans must stay inside `workspaceRoot`; values starting with `-` are rejected so they can't become scanner flags. The server also refuses to start without credentials (HMAC key for the webhook, bearer keys for reads) unless `auth.disabled` is set explicitly. Trade-off: the scanner resolves the host again on its own, so there is a DNS-rebinding window between the check and the scan.
+
+**REST and gRPC over the same use cases.** REST is what a CI webhook wants; gRPC adds `WatchScan`, a stream that pushes each status change until the scan finishes, so a client doesn't have to poll. Keeping both thin over `internal/application` means one implementation of the rules. `WatchScan` itself still polls the database every 2 seconds on the server side.
+
+## Run it locally
+
+Go 1.25+, Docker for Postgres and MinIO, and whichever scanners you want on your `PATH` (`GET /version` reports which ones it found). This uses Gitleaks because it's a single binary.
 
 ```bash
-# 1. Clone the repository
-git clone https://github.com/bryanwahyu/automaton-sec.git
-cd automaton-sec
+docker run -d --rm --name as-pg -e POSTGRES_USER=sec -e POSTGRES_PASSWORD=sec \
+  -e POSTGRES_DB=security_db -p 55433:5432 postgres:16-alpine
+docker run -d --rm --name as-minio -e MINIO_ROOT_USER=minioadmin -e MINIO_ROOT_PASSWORD=minioadmin \
+  -p 59100:9000 quay.io/minio/minio server /data
 
-# 2. Create config.yaml
-cp config.yaml.example config.yaml
-# Edit config.yaml with your credentials
+# once Postgres is up
+docker exec -i as-pg psql -U sec -d security_db < internal/infra/db/postgres/migration.sql
 
-# 3. Start all services
-docker compose up --build -d
+# filesystem scanners only read inside SCANNER_WORKSPACE_ROOT
+export WS=$(mktemp -d)
+git clone https://github.com/bryanwahyu/emailblast $WS/emailblast
 
-# 4. Check logs
-docker compose logs -f security-api
-
-# 5. Access API
-# MySQL variant:      REST http://localhost:5002   gRPC localhost:9002
-# PostgreSQL variant: REST http://localhost:5001   gRPC localhost:9001
+SERVER_PORT=8080 DB_TYPE=postgres DB_HOST=127.0.0.1 DB_PORT=55433 DB_USER=sec DB_PASSWORD=sec DB_NAME=security_db PG_SSLMODE=disable \
+MINIO_ENDPOINT=127.0.0.1:59100 MINIO_ACCESS_KEY=minioadmin MINIO_SECRET_KEY=minioadmin MINIO_BUCKET=security-scans \
+AUTH_WEBHOOK_HMAC_KEY=devhmac AUTH_API_KEYS=devkey SCANNER_WORKSPACE_ROOT=$WS \
+go run ./cmd/api
 ```
 
-### Option 2: Local Development
+REST is on `:8080` here (the default `:5000` is taken by AirPlay Receiver on macOS), gRPC on `:9000`. From another shell with the same `$WS`, queue a scan (the webhook takes an HMAC-SHA256 of the body) and read it back:
 
 ```bash
-# 1. Install dependencies
-go mod download
+body="{\"tool\":\"gitleaks\",\"path\":\"$WS/emailblast\"}"
+sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac devhmac -hex | awk '{print $2}')
+curl -s -X POST localhost:8080/v1/acme/webhook/security-scan \
+  -H 'Content-Type: application/json' -H "X-Signature: $sig" -d "$body"
 
-# 2. Setup database
-# Import: internal/infra/db/mysql/migration.sql
-
-# 3. Configure
-cp config.yaml.example config.yaml
-# Edit config.yaml
-
-# 4. Run
-go run cmd/api/main.go
+curl -s -H 'Authorization: Bearer devkey' localhost:8080/v1/acme/scans
 ```
 
-## ⚙️ Configuration
+Every setting can come from `config.yaml` (copy `config.yaml.example`, or point `CONFIG_PATH` at it) or from the environment variables listed at the top of that file; the environment wins.
 
-Copy `config.yaml.example` to `config.yaml` and fill it in. `config.yaml` is
-gitignored. Point somewhere else with `CONFIG_PATH=/path/to/config.yaml`.
+Request fields per tool: `image` for `trivy`; `target` (URL) for `nuclei`, `zap`, `sqlmap`; `path` for `gitleaks`, `semgrep`, `osv-scanner`. Optional `source`, `branch`, `commit_sha` and `metadata` are stored with the scan.
 
-Every setting can also come from the environment, which takes precedence over
-the file, so secrets need not be written to disk — `AUTH_API_KEYS`,
-`DB_PASSWORD`, `OPENAI_API_KEY`, and the rest are listed at the top of
-`config.yaml.example`. A missing config file is fine when the environment
-supplies enough.
+### Endpoints
 
-```yaml
-server:
-  port: 5000
-  grpcPort: 9000          # gRPC API; negative disables the listener
-  shutdownGrace: 30s      # how long to wait for in-flight scans on SIGTERM
+| Method | Path | |
+|---|---|---|
+| `GET` | `/health`, `/ready`, `/healthz`, `/metrics`, `/version` | probes, no auth |
+| `POST` | `/v1/{tenant}/webhook/security-scan` | queue a scan (HMAC) |
+| `POST` | `/v1/{tenant}/scans/{id}/retry` | re-run a scan |
+| `GET` | `/v1/{tenant}/scans`, `/scans/latest`, `/scans/{id}`, `/scans/{id}/errors` | read scans (offset and cursor pagination) |
+| `GET` | `/v1/{tenant}/summary?days=N` | severity rollup |
+| `POST`/`GET` | `/v1/{tenant}/ai/analyze` | see Limitations |
 
-database:
-  type: mysql             # mysql | postgres
-  host: localhost
-  port: 3306
-  user: root
-  password: yourpassword
-  name: security_db
-
-minio:
-  endpoint: minio.example.com   # host:port, no scheme
-  accessKey: minioadmin
-  secretKey: minioadmin
-  bucketName: security-scans
-  region: us-east-1
-  useSSL: true
-
-openai:
-  apiKey: sk-your-api-key-here  # optional; empty disables AI analysis
-  model: gpt-4.1-mini
-
-auth:
-  webhookHmacKey: a-long-random-string
-  apiKeys:
-    - another-long-random-string
-  disabled: false         # local development escape hatch
-
-cors:
-  allowedOrigins: []      # e.g. ["https://dashboard.example.com"]
-
-rateLimit:
-  burst: 20               # token bucket capacity per tenant+IP
-  perMinute: 60           # sustained refill rate
-
-scanner:
-  maxConcurrent: 2        # simultaneous scanner processes
-  timeout: 30m            # ceiling on a single scan
-  allowPrivateTargets: false
-  allowedHosts: []        # empty = any public host
-  workspaceRoot: ""       # required for gitleaks; empty disables path scans
-```
-
-The server refuses to start unless `auth.webhookHmacKey` or `auth.apiKeys` is
-set, or `auth.disabled: true` is explicit. See [Authentication](#-authentication).
-
-## 🔐 Authentication
-
-Every route except `GET /health` requires a credential.
-
-| Route | Credential |
-| --- | --- |
-| `POST /v1/{tenant}/webhook/security-scan` | `X-Signature: <hex HMAC-SHA256 of the raw body>`, keyed with `auth.webhookHmacKey` |
-| Everything else under `/v1/{tenant}` | `Authorization: Bearer <key>` from `auth.apiKeys` |
-| `GET /health`, `/ready`, `/metrics`, `/healthz` | none |
-| gRPC, every RPC except health | `authorization: Bearer <key>` metadata |
-
-All `/v1` routes are additionally rate limited per tenant+IP (`rateLimit.burst`,
-`rateLimit.perMinute`); probe and metrics endpoints are exempt. A malformed
-tenant segment is rejected with `400` before any handler runs.
-
-If `auth.webhookHmacKey` is unset, the webhook route falls back to bearer
-authentication rather than opening up.
-
-Signing a request body:
+gRPC exposes the same operations plus `WatchScan`, with reflection and the standard health service enabled:
 
 ```bash
-BODY='{"tool":"trivy","image":"nginx:latest"}'
-SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$WEBHOOK_KEY" -hex | awk '{print $2}')
-
-curl -X POST http://localhost:5002/v1/acme/webhook/security-scan \
-  -H "Content-Type: application/json" \
-  -H "X-Signature: $SIG" \
-  -d "$BODY"
+grpcurl -plaintext -H 'authorization: Bearer devkey' localhost:9000 list
 ```
 
-## 📡 API Endpoints
-
-These are the REST endpoints. The same use cases are also served over gRPC —
-see [gRPC API](#-grpc-api).
-
-Every path is tenant-scoped: `{tenant}` is an arbitrary identifier you choose,
-and scans are only ever read back under the tenant that created them.
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/health` | Liveness probe. No credential. |
-| `GET` | `/ready` | Readiness probe. No credential. |
-| `GET` | `/metrics` | Request, scan, error, memory, and goroutine counters. No credential. |
-| `GET` | `/healthz` | Detailed health including database connectivity. No credential. |
-| `GET` | `/version` | Build version plus the scanner versions actually installed. No credential. |
-| `POST` | `/v1/{tenant}/webhook/security-scan` | Queue a scan |
-| `POST` | `/v1/{tenant}/scans/{id}/retry` | Re-run a scan |
-| `GET` | `/v1/{tenant}/scans` | Paginated list |
-| `GET` | `/v1/{tenant}/scans/latest` | Cursor-paginated recent scans |
-| `GET` | `/v1/{tenant}/scans/{id}` | One scan; `?with=analysis` includes the AI result |
-| `GET` | `/v1/{tenant}/scans/{id}/errors` | Recorded failures for a scan |
-| `GET` | `/v1/{tenant}/summary` | Severity rollup over the last `?days=N` |
-| `POST` | `/v1/{tenant}/ai/analyze` | Queue AI analysis of a scan artifact |
-| `GET` | `/v1/{tenant}/ai/analyze` | Paginated analyses |
-| `POST` | `/v1/{tenant}/ai/analyze/retry` | Re-run an analysis |
-
-### Queue a scan
+## Tests
 
 ```bash
-POST /v1/{tenant}/webhook/security-scan
-Content-Type: application/json
-X-Signature: <hex HMAC-SHA256 of the body>
-
-{
-  "tool": "trivy",              // trivy | nuclei | gitleaks | semgrep | osv-scanner | zap | sqlmap
-  "image": "nginx:latest",      // trivy
-  "target": "https://example.com", // nuclei | zap | sqlmap
-  "path": "/workspace/repo",    // gitleaks | semgrep | osv-scanner,
-                                // must sit under scanner.workspaceRoot
-  "mode": "image",              // optional, free-form
-  "source": "github-actions",   // optional
-  "commit_sha": "abc123",       // optional
-  "branch": "main",             // optional
-  "metadata": {"pipeline": "nightly"} // optional, stored verbatim
-}
-```
-
-Scans run in the background, so the response is immediate:
-
-```json
-{
-  "status": "queued",
-  "tenant": "acme",
-  "tool": "trivy",
-  "branch": "main",
-  "commit": "abc123",
-  "message": "scan started in background",
-  "queuedAt": "2026-09-05T10:00:00Z"
-}
-```
-
-| Status | Meaning |
-| --- | --- |
-| `202 Accepted` | Queued. Poll `GET /v1/{tenant}/scans` for the result. |
-| `400 Bad Request` | Malformed body, unknown tool, or a target the policy rejects |
-| `401 Unauthorized` | Missing or wrong signature |
-| `429 Too Many Requests` | Rate limit hit, or `scanner.maxConcurrent` reached; a `Retry-After` header is sent |
-
-### List scans (offset pagination)
-
-```bash
-GET /v1/{tenant}/scans?page=1&page_size=20&tool=trivy&status=success&branch=main&target=example.com
-Authorization: Bearer <api-key>
-```
-
-Note the parameter is `page_size`, while the response uses `pageSize`:
-
-```json
-{
-  "data": [ ... ],
-  "page": 1,
-  "pageSize": 20,
-  "totalItems": 100,
-  "totalPages": 5
-}
-```
-
-### Latest scans (cursor pagination)
-
-```bash
-GET /v1/{tenant}/scans/latest?limit=20
-GET /v1/{tenant}/scans/latest?limit=20&cursor_time=2026-09-05T10:00:00Z&cursor_id=abc-123
-```
-
-```json
-{
-  "data": [ ... ],
-  "meta": {
-    "limit": 20,
-    "has_more": true,
-    "is_first_page": true,
-    "next_cursor": {
-      "cursor_time": "2026-09-05T09:12:00Z",
-      "cursor_id": "abc-123-trivy",
-      "next_url": "/v1/acme/scans/latest?limit=20&cursor_time=...&cursor_id=..."
-    }
-  }
-}
-```
-
-### Retry a scan
-
-```bash
-POST /v1/{tenant}/scans/{id}/retry
-Authorization: Bearer <api-key>
-```
-
-Answers `202`, or `429` when the scanner pool is full. Retries reuse the stored
-target, image, and path of the original scan.
-
-### Summary
-
-```bash
-GET /v1/{tenant}/summary?days=7
-Authorization: Bearer <api-key>
-```
-
-```json
-{"total_scans": 42, "critical": 3, "high": 11, "medium": 20}
-```
-
-### AI analysis
-
-```bash
-POST /v1/{tenant}/ai/analyze
-Authorization: Bearer <api-key>
-Content-Type: application/json
-
-{"scan_id": "abc-123-trivy"}
-```
-
-Returns `202` with an `analysis_id`. Read results with
-`GET /v1/{tenant}/ai/analyze?page=1&page_size=20`, or fetch a scan with
-`GET /v1/{tenant}/scans/{id}?with=analysis`.
-
-## 🔌 gRPC API
-
-The same use cases are served over gRPC on `server.grpcPort` (default `9000`),
-beside the REST API. Both surfaces call the same services, submit to the same
-scanner pool, and classify errors through the same code, so they cannot answer
-differently.
-
-The contract is [`proto/automaton/sec/v1/scan.proto`](proto/automaton/sec/v1/scan.proto).
-Generated Go code is committed under `gen/go`, so nothing downstream needs
-`protoc`.
-
-> **Port note:** MinIO's default port is also 9000. If you run MinIO on the same
-> host outside Docker, set `server.grpcPort` (or `SERVER_GRPC_PORT`) to
-> something else.
-
-### Why gRPC as well as REST
-
-The scan API is asynchronous: the REST caller gets `202` and then polls
-`GET /v1/{tenant}/scans/{id}` until the status stops being `running`. Every
-client reimplemented that loop with its own idea of a sensible interval.
-
-`WatchScan` is a server-streaming RPC that pushes instead:
-
-```protobuf
-rpc WatchScan(WatchScanRequest) returns (stream Scan);
-```
-
-Typed stubs are the secondary benefit; the polling loop is the expensive one.
-
-### Service surface
-
-| RPC | Purpose |
-| --- | --- |
-| `ScanService.TriggerScan` | Queue a scan; returns the scan id |
-| `ScanService.GetScan` | Read one scan |
-| `ScanService.ListScans` | Offset pagination with filters |
-| `ScanService.ListLatestScans` | Cursor pagination, newest first |
-| `ScanService.RetryScan` | Re-run an existing scan |
-| `ScanService.GetSummary` | Severity rollup over the last N days |
-| `ScanService.ListScanErrors` | Recorded failures for one scan |
-| `ScanService.WatchScan` | Stream a scan until it finishes |
-| `AnalysisService.AnalyzeScan` | Queue AI analysis of a scan artifact |
-| `AnalysisService.ListAnalyses` | Paginated analyses |
-| `AnalysisService.RetryAnalysis` | Re-run an analysis now |
-
-Health checks use the standard `grpc.health.v1.Health` service, so off-the-shelf
-probes work. Server reflection is registered, so `grpcurl` needs no local copy
-of the proto.
-
-### Authentication
-
-gRPC takes an API key only:
-
-```
-authorization: Bearer <api-key>
-```
-
-**The HMAC-signed webhook does not port to gRPC and is not going to.** The
-signature covers the exact bytes of the HTTP request body; a gRPC caller never
-handles those bytes, because the client library serializes the message, so
-there is nothing stable to sign. CI systems that already sign their payloads
-keep using `POST /v1/{tenant}/webhook/security-scan` over HTTP.
-
-`grpc.health.v1.Health` is served without a credential, matching `GET /health`.
-Everything else needs the key, reflection included — not to keep the schema
-secret, since the proto is published here, but so one rule covers everything a
-client can reach.
-
-### Error codes
-
-The same failure reports the same thing on both surfaces:
-
-| Cause | HTTP | gRPC |
-| --- | --- | --- |
-| Unknown scan | `404` | `NOT_FOUND` |
-| Bad tenant, unusable target, missing field | `400` | `INVALID_ARGUMENT` |
-| Scanner pool saturated | `429` | `RESOURCE_EXHAUSTED` |
-| Rate limit hit | `429` | `RESOURCE_EXHAUSTED` |
-| AI provider quota | `429` | `RESOURCE_EXHAUSTED` |
-| Missing or wrong API key | `401` | `UNAUTHENTICATED` |
-| Anything else | `500` | `INTERNAL` |
-
-### Using it with grpcurl
-
-```bash
-export KEY="your-api-key"
-export ADDR="localhost:9000"          # docker-compose maps it to 9002
-
-# What is served? (reflection)
-grpcurl -plaintext -H "authorization: Bearer $KEY" $ADDR list
-
-# Liveness — no credential needed
-grpcurl -plaintext $ADDR grpc.health.v1.Health/Check
-
-# Queue a scan; the response carries the scan id
-grpcurl -plaintext -H "authorization: Bearer $KEY" \
-  -d '{"tenant":"acme","tool":"TOOL_TRIVY","image":"nginx:latest"}' \
-  $ADDR automaton.sec.v1.ScanService/TriggerScan
-
-# Follow it to completion — one message per change, then the stream closes
-grpcurl -plaintext -H "authorization: Bearer $KEY" \
-  -d '{"tenant":"acme","id":"<scan-id>"}' \
-  $ADDR automaton.sec.v1.ScanService/WatchScan
-
-# Read it back
-grpcurl -plaintext -H "authorization: Bearer $KEY" \
-  -d '{"tenant":"acme","id":"<scan-id>"}' \
-  $ADDR automaton.sec.v1.ScanService/GetScan
-```
-
-Use `-d '{"tenant":"acme","page":1,"page_size":20,"filters":{"tool":"TOOL_TRIVY"}}'`
-against `ListScans` to filter, and `ListLatestScans` with the previous
-response's `nextCursor` to page backwards through history.
-
-### Using the Go SDK
-
-```bash
-go get github.com/bryanwahyu/automaton-sec/pkg/sdk
-```
-
-```go
-package main
-
-import (
-	"context"
-	"log"
-	"os"
-	"time"
-
-	secv1 "github.com/bryanwahyu/automaton-sec/gen/go/automaton/sec/v1"
-	"github.com/bryanwahyu/automaton-sec/pkg/sdk"
-)
-
-func main() {
-	c, err := sdk.New("api.example.com:9000",
-		sdk.WithAPIKey(os.Getenv("AUTOMATON_SEC_API_KEY")),
-		sdk.WithTLS(), // omit for a plaintext port, e.g. localhost
-	)
-	if err != nil {
-		log.Fatal(err)
-	}
-	defer c.Close()
-
-	// A scan can run for many minutes; bound the wait with your own context.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
-
-	res, err := c.TriggerScan(ctx, sdk.TrivyScan("acme", "nginx:latest"))
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Streams, and falls back to polling if the stream cannot be established.
-	scan, err := c.WaitForScan(ctx, "acme", res.GetScanId())
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	log.Printf("status=%s findings=%d artifact=%s",
-		scan.GetStatus(), scan.GetCounts().GetTotal(), scan.GetArtifactUrl())
-
-	if scan.GetStatus() == secv1.Status_STATUS_ERROR {
-		// A failed scan usually has a recorded reason.
-		errs, _ := c.ListScanErrors(ctx, "acme", scan.GetId(), 10)
-		for _, e := range errs.GetErrors() {
-			log.Printf("  %s: %s", e.GetPhase(), e.GetMessage())
-		}
-	}
-}
-```
-
-One request constructor per scanner puts the value in the field that tool
-actually reads, so an image cannot be sent where a URL belongs:
-
-```go
-sdk.TrivyScan("acme", "nginx:latest")            // image
-sdk.NucleiScan("acme", "https://example.com")    // target
-sdk.ZAPScan("acme", "https://example.com", "baseline")
-sdk.SQLMapScan("acme", "https://example.com/?id=1")
-sdk.GitleaksScan("acme", "my-repo")              // path, inside workspaceRoot
-sdk.SemgrepScan("acme", "my-repo")
-sdk.OSVScan("acme", "my-repo")
-
-// CI context and free-form metadata
-req := sdk.WithCI(sdk.TrivyScan("acme", "nginx:latest"), "github", "main", os.Getenv("GITHUB_SHA"))
-req, err := sdk.WithMetadata(req, map[string]any{"pipeline": "nightly"})
-```
-
-Other client options: `WithInsecure` (the default), `WithTLSConfig` for a
-private CA, `WithTimeout` for the per-call deadline, `WithRetryPolicy`, and
-`WithDialOptions` for anything the wrapper does not model. Retries apply only to
-`UNAVAILABLE`, `DEADLINE_EXCEEDED` and `RESOURCE_EXHAUSTED` — a rejected
-argument fails identically however often it is sent, so it is returned at once.
-
-### Clients in other languages
-
-`buf generate` with your own `buf.gen.yaml` produces stubs from the same proto:
-
-```bash
-buf generate --template buf.gen.python.yaml   # or ts, java, ...
-```
-
-A browser cannot call plain gRPC without a proxy. Use the REST API from
-browsers; it has CORS configured.
-
-### Changing the contract
-
-```bash
-buf lint                                  # style
-buf breaking --against '.git#branch=master'  # compatibility
-buf generate                              # regenerate gen/go, then commit it
-```
-
-CI runs all three, so a contract change cannot break a client silently and
-`gen/` cannot go stale.
-
-## 🔍 Security Tool Examples
-
-All examples assume `WEBHOOK_KEY` holds `auth.webhookHmacKey` and use this helper:
-
-```bash
-scan() {
-  local body="$1"
-  local sig
-  sig=$(printf '%s' "$body" | openssl dgst -sha256 -hmac "$WEBHOOK_KEY" -hex | awk '{print $2}')
-  curl -X POST http://localhost:5002/v1/acme/webhook/security-scan \
-    -H "Content-Type: application/json" \
-    -H "X-Signature: $sig" \
-    -d "$body"
-}
-```
-
-### Trivy — container image scanning
-
-```bash
-scan '{"tool":"trivy","image":"nginx:latest"}'
-```
-
-Scans for vulnerabilities (CVEs), secrets, and misconfigurations.
-
-#### Image integrity: when "zero findings" is not "safe"
-
-A vulnerability scanner can only report CVEs for packages it can see, and an
-image built to pass a scan exploits exactly that. Every Trivy scan is
-therefore also checked for the ways an image hides from the scanner:
-
-| Check | Severity | What it catches |
-|-------|----------|-----------------|
-| `os_packages_missing` | high | A base OS is detected but no OS packages are — the package database was deleted, so every OS CVE is invisible |
-| `inventory_empty` | high | No OS and no application packages at all: the scanner had nothing to check |
-| `os_end_of_life` | high | The OS no longer gets fixes and its vulnerability data is incomplete, so few CVEs is expected, not reassuring |
-| `digest_mismatch` | critical | The image scanned is not the digest that was requested |
-| `tag_not_pinned` | info | The image was named by tag, which can be re-pointed after the scan; `pinned_ref` gives the digest to deploy |
-
-Counted issues are added to the scan's severity counts, so dashboards and
-`/summary` show them even if they read nothing else. The full evidence is
-stored in the scan's metadata under `image_integrity`:
-
-```json
-"metadata": {
-  "image_integrity": {
-    "verdict": "unverified",
-    "requested_ref": "registry.example.com/app:latest",
-    "pinned": false,
-    "digest": "sha256:…",
-    "pinned_ref": "registry.example.com/app@sha256:…",
-    "os_family": "debian", "os_name": "12.7",
-    "os_packages": 0, "lang_packages": 0,
-    "issues": [{"check": "os_packages_missing", "severity": "high", "detail": "…"}]
-  }
-}
-```
-
-Treat `verdict: "unverified"` as a failed gate in CI, whatever the CVE count
-says. These checks cover what the scanner could not see; they do not detect
-malware inside files it did see, and they do not prove who built the image —
-use signature verification (e.g. cosign) for that.
-
-A report that cannot be parsed is stored as `failed` with the reason under
-`metadata.parse_error`, rather than as a successful scan with zero findings.
-
-`image_integrity` and `parse_error` are reserved metadata keys: the service
-overwrites them on every run. Caller metadata that is not a JSON object is
-kept under `caller_metadata`.
-
-### Nuclei — web vulnerability scanning
-
-```bash
-scan '{"tool":"nuclei","target":"https://example.com"}'
-```
-
-Detects known CVEs, misconfigurations, and exposed panels.
-
-### Gitleaks — secret scanning
-
-```bash
-scan '{"tool":"gitleaks","path":"/workspace/repo"}'
-```
-
-Finds API keys, passwords, private keys, and tokens. The path must resolve
-inside `scanner.workspaceRoot`; filesystem scans are refused when that is unset.
-
-### Semgrep — static analysis of source code
-
-```bash
-scan '{"tool":"semgrep","path":"/app/workspace/repo"}'
-```
-
-Runs `--config auto`, so it pulls the registry rulesets matching the languages
-it finds. Severity comes from the rule's triaged rating where it has one, and
-from its ERROR/WARNING/INFO level otherwise.
-
-### osv-scanner — dependency vulnerabilities
-
-```bash
-scan '{"tool":"osv-scanner","path":"/app/workspace/repo"}'
-```
-
-Walks lockfiles recursively (`package-lock.json`, `go.sum`, `requirements.txt`,
-`Gemfile.lock`, and the rest) and resolves each dependency against the OSV
-database. Complements Trivy: Trivy scans a built image, osv-scanner scans the
-source it was built from.
-
-### ZAP — web app security
-
-```bash
-scan '{"tool":"zap","target":"https://example.com"}'
-```
-
-Tests for XSS, SQL injection, CSRF, and missing security headers.
-
-### SQLMap — SQL injection
-
-```bash
-scan '{"tool":"sqlmap","target":"https://example.com/page?id=1"}'
-```
-
-### Target restrictions
-
-By default the API refuses to scan loopback, link-local, and RFC1918
-destinations — otherwise any caller could point it at `169.254.169.254` or an
-internal service and read the findings. Set `scanner.allowPrivateTargets: true`
-to allow them, and `scanner.allowedHosts` to restrict scanning to hosts you own.
-
-## 🐳 Docker Services
-
-The docker-compose stack includes:
-
-- **security-api** (port 5002) - Main API with MySQL
-- **security-api-pg** (port 5001) - API variant with PostgreSQL
-- **postgres** (port 5432) - PostgreSQL database
-
-**Note:** Host port 5002 is used instead of 5000 to avoid conflicts with macOS ControlCenter.
-
-The compose profiles run with `auth.disabled: true` in `config.postgres.yaml`.
-That is a local-development setting — set real credentials before exposing the
-service to anything but your own machine.
-
-## 🛠️ Development
-
-### Running Tests
-```bash
-go test ./...
 go test -race ./...
+go vet ./...
+buf lint                     # proto contract
 ```
 
-CI (`.github/workflows/ci.yml`) runs `gofmt`, `go vet`, `go build`,
-`go test -race`, `govulncheck`, and a Docker build on every push and PR.
+Tests cover the per-tool severity parsers (with a real osv-scanner fixture), the target policy, config loading, the worker pool, the scan service, the HTTP router and gRPC server against stubs, and the SDK's retry logic. CI runs gofmt, vet, build and race tests, lints the proto files and checks `gen/` is up to date, runs `govulncheck`, and builds the Docker image. Tagging `v*` builds a multi-arch image and creates a GitHub release.
 
-### Building
-```bash
-# Local build
-go build -o security-api ./cmd/api
+## Limitations
 
-# Docker build
-docker build -t security-api:latest .
+- **The AI analysis endpoint doesn't see the scan.** It sends only the artifact URL to the OpenAI Chat Completions API, and the system prompt tells the model to infer risks from the file type and URL. The output reads plausibly but isn't based on the findings. Fixing it means downloading the report and sending its contents, within token limits. It also still calls OpenAI when no API key is configured.
+- **SQLMap doesn't work as invoked.** The runner passes `--json -o <file>`; SQLMap has no `--json` option and `-o` turns on optimisation, so no report file is produced. SQLMap is also not installed in the Docker image.
+- Semgrep is run with `--config auto --metrics off`. Recent Semgrep versions reject that combination; I haven't verified it here.
+- `docker-compose.yml` runs only the API (plus Postgres for the Postgres variant). There is no MinIO or MySQL service, and the Postgres variant points MinIO at `localhost:9000`, which inside the container is the API's own gRPC port. Use the local steps above, or point the compose config at a real MinIO.
+- Artifact URLs are plain object URLs, not presigned, so reading them depends on the bucket policy.
+- Migrations are applied by hand; nothing runs them on startup.
+- The compose file runs the containers as `root`.
 
-# Pin a different scanner version
-docker build --build-arg TRIVY_VERSION=0.74.0 -t security-api:latest .
+## License
 
-# Stamp a version into the binary (what the release workflow does)
-docker build \
-  --build-arg VERSION=v1.2.3 \
-  --build-arg COMMIT=$(git rev-parse --short HEAD) \
-  --build-arg BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ) \
-  -t security-api:v1.2.3 .
-```
-
-### Releasing
-
-Pushing a `v*` tag runs `.github/workflows/release.yml`, which builds
-`linux/amd64` and `linux/arm64`, pushes to Docker Hub as
-`<user>/automaton-sec:<version>`, `:<major>.<minor>`, and `:latest`, and opens a
-GitHub release with generated notes.
-
-It needs two repository secrets — `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN`
-(a Docker Hub access token, not the account password). Without them the job
-warns and skips the push rather than failing.
-
-```bash
-git tag v1.0.0
-git push origin v1.0.0
-```
-
-The image builds in three stages: a Go stage that compiles the API and
-osv-scanner, a fetch stage that downloads the third-party scanners, and a JRE
-runtime that receives only the resulting binaries. `wget`, `unzip`, the
-tarballs, and the Go toolchain never reach the final image.
-
-### Database Migrations
-```bash
-# MySQL
-mysql -u root -p security_db < internal/infra/db/mysql/migration.sql
-
-# PostgreSQL
-psql -U postgres -d security_db -f internal/infra/db/postgres/migration.sql
-```
-
-Existing databases need the `path` and `metadata` columns added; both migration
-files carry the `ALTER TABLE` statements at the top of the scans section.
-
-## 📊 Response Format
-
-### Scan Result
-```json
-{
-  "id": "scan-123",
-  "tenant_id": "default",
-  "triggered_at": "2026-09-05T10:00:00Z",
-  "tool": "trivy",
-  "image": "nginx:latest",
-  "status": "success",
-  "counts": {
-    "critical": 5,
-    "high": 12,
-    "medium": 8,
-    "low": 3,
-    "total": 28
-  },
-  "artifact_url": "https://minio.example.com/scans/artifact.json",
-  "raw_format": "json",
-  "duration_ms": 45000,
-  "source": "github-actions",
-  "commit_sha": "abc123",
-  "branch": "main",
-  "metadata": {"pipeline": "nightly"}
-}
-```
-
-`status` is one of `running`, `success`, `failed`, or `error`. A scanner that
-exits non-zero purely to report findings still counts as `success`; `failed`
-means the tool itself failed, and `error` means the scan never produced a
-usable artifact.
-
-## 🔐 Security Tools Versions
-
-Pinned as build arguments in the Dockerfile, so they can be bumped without
-editing a `RUN` line. `GET /version` reports what is actually installed by
-probing the binaries, so the list below cannot drift silently:
-
-```json
-{
-  "app": {"version": "v1.2.3", "commit": "abc1234", "built": "2026-09-05T10:00:00Z"},
-  "tools": {
-    "trivy": {"version": "Version: 0.74.0", "available": true},
-    "sqlmap": {"available": false, "error": "not installed"}
-  }
-}
-```
-
-- Trivy: v0.74.0 (`TRIVY_VERSION`)
-- Nuclei: v3.3.5 (`NUCLEI_VERSION`)
-- Gitleaks: v8.18.1 (`GITLEAKS_VERSION`)
-- Semgrep: 1.86.0 (`SEMGREP_VERSION`)
-- osv-scanner: v1.9.2 (`OSV_SCANNER_VERSION`)
-- ZAP: v2.16.1 (`ZAP_VERSION`)
-- SQLMap: **not currently installed in the image**, though the runner will
-  dispatch to it. `GET /version` reports it as unavailable.
-
-Trivy was previously pinned to v0.65.0, which was never published — both the
-GitHub API and the download URL return 404 for it, so the image could not build.
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, the checks CI runs, and the
-five files a new scanner touches. Security vulnerabilities go through
-[private advisories](https://github.com/bryanwahyu/automaton-sec/security/advisories/new),
-not public issues — see [SECURITY.md](SECURITY.md).
-
-## 📝 License
-
-MIT — see [LICENSE](LICENSE). Copyright (c) 2025 Bryan Wahyu.
-
-## 🙏 Acknowledgments
-
-- [Trivy](https://github.com/aquasecurity/trivy) - Container security scanner
-- [Nuclei](https://github.com/projectdiscovery/nuclei) - Vulnerability scanner
-- [Gitleaks](https://github.com/gitleaks/gitleaks) - Secret scanner
-- [OWASP ZAP](https://www.zaproxy.org/) - Web application security scanner
-- [SQLMap](https://sqlmap.org/) - SQL injection tool
+MIT
